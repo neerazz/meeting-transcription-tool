@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meeting-transcription-tool"
+version = "0.1.0"
+authors = [
+  { name="Your Name", email="you@example.com" },
+]
+description = "A tool to transcribe meetings with speaker diarization."
+readme = "README.md"
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "openai>=1.53.0",
+    "click>=8.1.7",
+    "rich>=13.7.0",
+    "python-docx>=1.1.2",
+    "python-dotenv>=1.0.1",
+    "mutagen>=1.47.0",
+    "pydub>=0.25.1",
+    "pyannote.audio>=3.1.1",
+    "torch>=2.1.0",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/your-username/meeting-transcription-tool"
+"Bug Tracker" = "https://github.com/your-username/meeting-transcription-tool/issues"
+
+[project.scripts]
+transcribe = "src.meeting_transcription_tool.cli:cli"

@@ -5,7 +5,7 @@ import os
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Any
 
-from .utils import ms_to_hhmmss, ms_to_srt_timestamp
+from .audio_processor import ms_to_hhmmss, ms_to_srt_timestamp
 
 try:
 	from docx import Document  # type: ignore
