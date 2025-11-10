@@ -4,14 +4,16 @@ import json
 import os
 from datetime import datetime
 from typing import Optional, List
+import asyncio
+import logging
 
 import click
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
+from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
-from .utils import validate_audio_file, bytes_to_readable
-from .transcriber import transcribe_with_whisper
-from .exporters import export_txt, export_json, export_srt, export_docx
+from .audio_processor import validate_audio_file, bytes_to_readable
+from .transcriber import run_transcription_pipeline
+from .exporter import export_txt, export_json, export_srt, export_docx
 
 
 console = Console()
@@ -23,14 +25,23 @@ def _default_base_name(input_path: str) -> str:
 
 
 @click.group(help="Meeting Transcription Tool CLI")
-def cli() -> None:
-	pass
+@click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging.")
+@click.option("--quiet", "-q", is_flag=True, help="Suppress all output except for errors.")
+def cli(verbose: bool, quiet: bool) -> None:
+	if verbose:
+		logging.basicConfig(level=logging.DEBUG)
+	elif quiet:
+		logging.basicConfig(level=logging.CRITICAL)
+		console.quiet = True
+	else:
+		logging.basicConfig(level=logging.INFO)
 
 
 @cli.command("transcribe", help="Transcribe an audio file with Whisper and export outputs.")
 @click.option("-i", "--input", "input_path", required=True, type=click.Path(exists=True, dir_okay=False, readable=True), help="Path to audio file (MP3, WAV, M4A, FLAC).")
 @click.option("-o", "--output-dir", default="outputs", show_default=True, type=click.Path(file_okay=False), help="Directory to write outputs.")
 @click.option("--api-key", default=None, help="OpenAI API Key (overrides OPENAI_API_KEY env var).")
+@click.option("--hf-token", default=None, help="Hugging Face API Token (overrides HUGGING_FACE_TOKEN env var).")
 @click.option("--model", default="whisper-1", show_default=True, help="OpenAI model for transcription.")
 @click.option("--formats", multiple=True, type=click.Choice(["txt", "json", "srt", "docx"]), default=["txt", "json", "srt"], show_default=True, help="Output formats to export.")
 @click.option("--language", default=None, help="Hint language code (e.g., en).")
@@ -39,6 +50,7 @@ def transcribe_cmd(
 	input_path: str,
 	output_dir: str,
 	api_key: Optional[str],
+	hf_token: Optional[str],
 	model: str,
 	formats: List[str],
 	language: Optional[str],
@@ -55,26 +67,26 @@ def transcribe_cmd(
 	with Progress(
 		SpinnerColumn(),
 		TextColumn("[progress.description]{task.description}"),
-		BarColumn(),
 		TimeElapsedColumn(),
 		transient=True,
 		console=console,
 	) as progress:
-		task = progress.add_task("Uploading and transcribing with Whisper…", total=None)
+		progress.add_task("Running transcription pipeline...", total=None)
 		try:
-			result = transcribe_with_whisper(
+			whisper_kwargs = {
+				"model": model,
+				"api_key": api_key,
+				"language": language,
+				"temperature": temperature,
+			}
+			result = asyncio.run(run_transcription_pipeline(
 				audio_path=input_path,
-				model=model,
-				api_key=api_key,
-				language=language,
-				temperature=temperature,
-			)
+				hf_token=hf_token,
+				**whisper_kwargs
+			))
 		except Exception as e:
-			progress.stop()
-			console.print(f"[red]Transcription failed:[/red] {e}")
+			console.print(f"[red]Pipeline failed:[/red] {e}")
 			raise click.ClickException(str(e))
-		finally:
-			progress.stop()
 
 	base_name = _default_base_name(input_path)
 	written = []
@@ -103,5 +115,3 @@ def transcribe_cmd(
 
 if __name__ == "__main__":
 	cli()
-
-
