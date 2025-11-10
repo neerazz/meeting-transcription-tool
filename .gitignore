@@ -1,3 +1,18 @@
+__pycache__/
+*.pyc
+.Python
+.venv/
+env/
+venv/
+.env
+.DS_Store
+.idea/
+.vscode/
+outputs/
+dist/
+build/
+*.egg-info/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

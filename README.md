@@ -1,5 +1,75 @@
 # Meeting Transcription Tool
 
+# Meeting Transcription Tool
+
+Simple CLI to transcribe meeting audio using OpenAI Whisper and export to TXT/JSON/SRT/DOCX.
+
+## Quick Start (Windows / PowerShell)
+
+1) Create and activate a virtual environment:
+
+```powershell
+python -m venv .venv
+. .\.venv\Scripts\Activate.ps1
+```
+
+2) Install dependencies:
+
+```powershell
+pip install -U pip
+pip install -r requirements.txt
+```
+
+3) Set your OpenAI API key (PowerShell session):
+
+```powershell
+$env:OPENAI_API_KEY = "YOUR_OPENAI_KEY"
+```
+
+4) Run transcription:
+
+```powershell
+python -m meeting_transcription_tool.cli transcribe `
+  --input "F:\Meta\Final Proof With Audio and Transcript\Jason 1on1 - Q3 2025 Performance 09-19 09-37 am.m4a" `
+  --output-dir "outputs" `
+  --formats txt json srt docx
+```
+
+Outputs will be written to the `outputs` directory.
+
+> Note: If you prefer, you can pass `--api-key` on the command instead of using the environment variable.
+
+## Features
+
+- Transcription via OpenAI Whisper (`whisper-1` by default)
+- Exports:
+  - TXT (with `[HH:MM:SS - HH:MM:SS] Speaker X: text`)
+  - JSON (structured with metadata)
+  - SRT (subtitle format)
+  - DOCX (requires `python-docx`)
+- Basic audio validation (format and size)
+- Clean CLI with progress indicator
+
+## Limitations / Roadmap
+
+- Speaker diarization is not implemented yet; segments are labeled `Speaker 1`. We can add diarization in a subsequent version.
+- Duration validation is not enforced to keep setup simple (no ffmpeg requirement).
+
+## Developer Notes
+
+- Project structure:
+
+```
+meeting_transcription_tool/
+  cli.py
+  exporters.py
+  transcriber.py
+  utils.py
+```
+
+- Invoke CLI via module: `python -m meeting_transcription_tool.cli`
+- Configure `OPENAI_API_KEY` in your environment or use `--api-key` flag.
+
 A Python-based tool to upload meeting audio files and generate transcripts with speaker labels and timestamps, similar to the transcription feature in Microsoft Word.
 
 ## Features
