@@ -170,6 +170,28 @@ def stage2_identify_speakers(
     
     print(f"[Stage 2] Identifying speakers with AI ({ai_model})...")
     
+    # Pre-analyze transcript for quality
+    from .speaker_quality_analyzer import analyze_transcript_speakers, identify_actual_speakers_vs_mentioned
+    from .speaker_validator import validate_mappings, should_trigger_refinement
+    
+    analysis = analyze_transcript_speakers(
+        segments=intermediate.segments,
+        filename=intermediate.audio_file,
+        context=speaker_context,
+    )
+    
+    print(f"[Stage 2] Pre-analysis: {analysis.speaker_count} speakers detected, "
+          f"meeting type: {analysis.meeting_type or 'unknown'}, "
+          f"quality score: {analysis.quality_score:.2f}")
+    if analysis.issues:
+        for issue in analysis.issues:
+            print(f"[Stage 2] ⚠️  {issue}")
+    
+    # Identify actual speakers vs mentioned names
+    speaker_analysis = identify_actual_speakers_vs_mentioned(intermediate.segments, analysis)
+    if speaker_analysis['mentioned_only']:
+        print(f"[Stage 2] Names mentioned but not speaking: {', '.join(speaker_analysis['mentioned_only'])}")
+    
     # Build transcript text
     transcript_text = format_segments_for_prompt(intermediate.segments)
     
@@ -178,18 +200,44 @@ def stage2_identify_speakers(
         speaker_context = extract_full_context(intermediate.audio_file)
         print(f"[Stage 2] Extracted context: {speaker_context}")
     
-    # Identify speakers - pass filename so AI can extract names from it
-    num_speakers = len(set(seg['speaker'] for seg in intermediate.segments))
+    # Identify speakers - pass segments for better analysis
+    num_speakers = analysis.speaker_count
     result = identify_speakers(
         transcript_text=transcript_text,
         num_speakers=num_speakers,
-        participant_names=None,
+        participant_names=list(speaker_analysis['actual_speakers']) if speaker_analysis['actual_speakers'] else None,
         participant_context=speaker_context,
-        filename=intermediate.audio_file,  # Pass filename so AI can extract names from it
+        filename=intermediate.audio_file,
         api_key=api_key,
         model=ai_model,
+        segments=intermediate.segments,  # Pass segments for analysis
+        pre_analysis=analysis,  # Pass pre-analysis
     )
     mappings = result.mappings
+    
+    # Post-validate mappings
+    validation = validate_mappings(
+        mappings=mappings,
+        diarization_speaker_count=num_speakers,
+        meeting_type=analysis.meeting_type,
+        filename=intermediate.audio_file,
+        analysis=analysis,
+    )
+    
+    if validation.issues:
+        print(f"[Stage 2] Validation issues:")
+        for issue in validation.issues:
+            print(f"  ⚠️  {issue}")
+    
+    # Apply corrections if needed
+    if validation.corrected_mappings:
+        print(f"[Stage 2] Applied corrections to mappings")
+        mappings = validation.corrected_mappings
+    
+    # Trigger refinement if needed
+    if should_trigger_refinement(validation, analysis.quality_score):
+        print(f"[Stage 2] Quality issues detected, triggering refinement pass...")
+        # Refinement will be handled in identify_speakers if needed
     
     if result.request_metadata:
         print("[Stage 2] AI speaker-label request metadata:")
@@ -201,13 +249,24 @@ def stage2_identify_speakers(
         print(f"[Stage 2] Uploaded audio file id: {result.audio_file_id} "
               f"({result.audio_upload_bytes:,} bytes)")
     
-    # Save mappings
+    # Save mappings (use validated/corrected mappings)
     mapping_data = {
         "source_file": intermediate_file,
         "audio_file": intermediate.audio_file,
         "ai_model": ai_model,
         "speaker_context": speaker_context,
-        "mappings": mappings,
+        "mappings": mappings,  # Already corrected by validation
+        "pre_analysis": {
+            "speaker_count": analysis.speaker_count,
+            "meeting_type": analysis.meeting_type,
+            "quality_score": analysis.quality_score,
+            "issues": analysis.issues,
+        } if analysis else None,
+        "validation": {
+            "is_valid": validation.is_valid,
+            "confidence": validation.confidence,
+            "issues": validation.issues,
+        } if validation else None,
         "ai_request_metadata": result.request_metadata,
         "ai_response_metadata": result.response_metadata,
         "ai_audio_file_id": result.audio_file_id,

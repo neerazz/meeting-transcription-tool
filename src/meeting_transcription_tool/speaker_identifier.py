@@ -61,7 +61,9 @@ def identify_speakers(
     api_key: Optional[str] = None,
     model: Literal["gpt-5-mini", "gpt-4o", "gemini-2.0-flash"] = "gpt-5-mini",
     upload_audio: bool = True,
- ) -> SpeakerIdentificationResult:
+    segments: Optional[List[Dict]] = None,
+    pre_analysis: Optional[Any] = None,
+) -> SpeakerIdentificationResult:
     """
     Use AI to identify speakers in a transcript and map generic labels to actual names.
     
@@ -73,6 +75,8 @@ def identify_speakers(
         filename: Name of the audio file (optional, often contains participant names)
         api_key: OpenAI API key (optional, will use env var if not provided)
         model: AI model to use - "gpt-5-mini" (default), "gpt-4o", or "gemini-2.0-flash"
+        segments: Raw segments for analysis (optional, for quality improvements)
+        pre_analysis: Pre-analysis results (optional, for quality improvements)
     
     Returns:
         SpeakerIdentificationResult containing mappings and metadata.
@@ -87,6 +91,8 @@ def identify_speakers(
             api_key,
             model_name=model,
             upload_audio=upload_audio,
+            segments=segments,
+            pre_analysis=pre_analysis,
         )
     elif model == "gemini-2.0-flash":
         return _identify_with_gemini(
@@ -106,26 +112,64 @@ def _identify_with_openai(
     api_key: Optional[str],
     model_name: str,
     upload_audio: bool,
- ) -> SpeakerIdentificationResult:
+    segments: Optional[List[Dict]] = None,
+    pre_analysis: Optional[Any] = None,
+) -> SpeakerIdentificationResult:
     """Identify speakers using OpenAI GPT family (GPT-5 Mini/GPT-4o)."""
     client = OpenAI(api_key=api_key or os.getenv("OPENAI_API_KEY"))
     
-    # Build optimized prompt
+    # Use pre-analysis if available for better quality
+    if pre_analysis and hasattr(pre_analysis, 'meeting_type'):
+        meeting_type = pre_analysis.meeting_type
+        mentioned_only = getattr(pre_analysis, 'mentioned_names', set())
+        self_intros = getattr(pre_analysis, 'self_introductions', {})
+    else:
+        meeting_type = None
+        mentioned_only = set() if mentioned_names is None else set()
+        self_intros = {}
+    
+    # Build optimized prompt with pre-analysis data
     prompt = _build_optimized_prompt(
         transcript_text,
         num_speakers,
         participant_names,
         participant_context,
-        filename
+        filename,
+        meeting_type=meeting_type,
+        mentioned_names=mentioned_only,
+        self_introductions=self_intros,
     )
     
-    # System instruction optimized for speaker identification
+    # Enhanced system instruction with strict validation
     system_instruction = """You are an expert conversation analyst specializing in accurate speaker identification and timeline alignment.
+
+CRITICAL RULES:
+1. **ONLY map people who actually SPEAK** - Do NOT map names that are just mentioned in conversation
+2. **Validate speaker count** - Match the number of unique speaker labels from diarization
+3. **1-on-1 enforcement** - If this is a 1-on-1 meeting, there MUST be exactly 2 speakers
+4. **Filename priority** - Names from filename are the actual speakers
+5. **Mentioned vs Speaking** - If someone is mentioned but never speaks, they are NOT a speaker
 
 Your responsibilities:
 - Map each diarization label to the real-world participant name whenever possible.
 - Leverage uploaded audio, filename hints, conversation context, and explicit mentions.
 - Preserve the chronological order and ensure every segment is assigned to exactly one mapped speaker.
+- DISTINGUISH between speakers (people who talk) and mentioned names (people referenced but don't talk).
+
+Core directives:
+1. **Filename first** — Extract potential participant names from the audio filename (e.g., "Alice_Bob_sync.m4a" implies Alice and Bob).
+2. **Uploaded audio** — Compare voices within the provided audio attachment to resolve ambiguous cases or confirm role changes.
+3. **Transcript evidence** — Use self-introductions (“Hi, this is Alice”), references (“Thanks, Bob”), or descriptions (titles, departments).
+4. **Context inference** — Apply best-judgement roles when names are absent (Interviewer, Candidate, Host, Manager, Support Engineer, etc.).
+5. **Timeline fidelity** — Never merge speakers. Maintain unique labels for distinct voices across the entire timeline.
+6. **Transparency** — Provide reasoning describing the exact clues (time, quote, filename, context) that justify each mapping.
+
+JSON contract:
+- Always return a JSON object with `speaker_mappings`, `analysis`, and `confidence_notes`.
+- `speaker_mappings` is an array of objects with `generic_label`, `actual_name`, `confidence`, and `reasoning`.
+- Confidence must be one of: high, medium, low.
+- Reasoning must cite time ranges or transcript snippets (referenced by timeline markers).
+"""
 
 Core directives:
 1. **Filename first** — Extract potential participant names from the audio filename (e.g., "Alice_Bob_sync.m4a" implies Alice and Bob).
@@ -269,6 +313,39 @@ Use this information to help identify speakers by voice characteristics when ava
         actual_name = mapping.get("actual_name", "")
         if generic_label and actual_name:
             mappings[generic_label] = actual_name
+    
+    # Post-process and validate mappings
+    if pre_analysis and hasattr(pre_analysis, 'meeting_type'):
+        from .speaker_validator import validate_mappings, enforce_one_on_one, filter_mentioned_names
+        
+        # Get mentioned-only names if available
+        mentioned_only = getattr(pre_analysis, 'mentioned_names', set())
+        if segments:
+            from .speaker_quality_analyzer import identify_actual_speakers_vs_mentioned
+            speaker_analysis = identify_actual_speakers_vs_mentioned(segments, pre_analysis)
+            mentioned_only = speaker_analysis.get('mentioned_only', set())
+        
+        # Validate mappings
+        validation = validate_mappings(
+            mappings=mappings,
+            diarization_speaker_count=num_speakers or len(mappings),
+            meeting_type=pre_analysis.meeting_type,
+            filename=filename,
+            analysis=pre_analysis,
+        )
+        
+        # Apply corrections
+        if validation.corrected_mappings:
+            mappings = validation.corrected_mappings
+        
+        # Enforce 1-on-1 if needed
+        if pre_analysis.meeting_type == "1-on-1" and segments:
+            diarization_labels = [seg.get('speaker', '') for seg in segments if seg.get('speaker')]
+            mappings = enforce_one_on_one(mappings, diarization_labels)
+        
+        # Filter mentioned-only names
+        if mentioned_only:
+            mappings = filter_mentioned_names(mappings, mentioned_only)
 
     response_metadata = _build_response_metadata(
         provider="openai",
@@ -425,7 +502,10 @@ def _build_optimized_prompt(
     num_speakers: Optional[int],
     participant_names: Optional[List[str]],
     participant_context: Optional[str],
-    filename: Optional[str] = None
+    filename: Optional[str] = None,
+    meeting_type: Optional[str] = None,
+    mentioned_names: Optional[set] = None,
+    self_introductions: Optional[Dict[str, str]] = None,
 ) -> str:
     """
     Build optimized prompt for speaker identification.
@@ -488,8 +568,23 @@ def _build_optimized_prompt(
         context_parts.append(f"• Known names: {', '.join(participant_names)}")
     if participant_context:
         context_parts.append(f"• Meeting context: {participant_context}")
-    if is_one_on_one:
+    # Use meeting_type from pre-analysis if available
+    if meeting_type:
+        is_one_on_one = (meeting_type == "1-on-1")
+        if is_one_on_one:
+            context_parts.append(f"• ⚠️ CRITICAL: This is a 1-on-1 meeting - there should be EXACTLY 2 speakers")
+    elif is_one_on_one:
         context_parts.append(f"• ⚠️ CRITICAL: This is a 1-on-1 meeting - there should be EXACTLY 2 speakers")
+    
+    # Add pre-analysis insights
+    if mentioned_names:
+        context_parts.append(f"• ⚠️ WARNING: These names are MENTIONED but may NOT be speakers: {', '.join(list(mentioned_names)[:5])}")
+        context_parts.append(f"  → DO NOT map these as speakers unless they actually speak in the transcript")
+    
+    if self_introductions:
+        intro_names = ', '.join([f"{label}->{name}" for label, name in self_introductions.items()])
+        context_parts.append(f"• Self-introductions found: {intro_names}")
+        context_parts.append(f"  → These are likely actual speakers - use these names")
     
     context_section = "\n".join(context_parts) if context_parts else "• No additional context provided"
     
@@ -506,19 +601,27 @@ def _build_optimized_prompt(
 - Only use generic roles if filename names don't match any speakers
 """
     
-    if is_one_on_one:
+    # Use meeting_type from parameter if available, otherwise detect from filename
+    final_meeting_type = meeting_type if meeting_type else ("1-on-1" if is_one_on_one else None)
+    
+    if final_meeting_type == "1-on-1":
         one_on_one_warning = f"""
 🚨 CRITICAL VALIDATION FOR 1-ON-1 MEETING:
-- This is a 1-on-1 meeting - there MUST be EXACTLY 2 speakers
+- This is a 1-on-1 meeting - there MUST be EXACTLY 2 speakers (no more, no less)
+- Diarization detected {num_speakers} unique speaker labels - you MUST map exactly {num_speakers} speakers
 - If you see more than 2 unique speaker labels, you are likely:
   a) Mistaking names MENTIONED in conversation as speakers
   b) Counting background voices or noise as speakers
   c) Misinterpreting the diarization labels
 - ONLY map the 2 actual speakers who are having the conversation
 - Ignore any names mentioned in the transcript that are NOT actual speakers
-- If filename has names (e.g., "Tim 1 on 1"), those are the 2 speakers - use them
+- If filename has 1 name (e.g., "Tim 1 on 1"), Tim is one speaker - find the other
+- If filename has 2 names, use both - they are the 2 speakers
 - Do NOT create mappings for names that are just mentioned in passing
+- VALIDATION: Your output MUST have exactly 2 speaker mappings for this 1-on-1 meeting
 """
+    else:
+        one_on_one_warning = ""
     
     prompt = f"""TASK: Identify each speaker in this transcript by their actual name or role.
 
