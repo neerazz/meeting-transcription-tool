@@ -9,6 +9,7 @@ import asyncio
 import logging
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import multiprocessing
 
 import click
 from rich.console import Console
@@ -30,6 +31,24 @@ load_dotenv()
 
 
 console = Console()
+
+
+def _get_optimal_parallel_workers() -> int:
+	"""
+	Calculate optimal number of parallel workers based on CPU capacity.
+	
+	Returns:
+		Number of workers (CPU count - 1, minimum 1, maximum 8)
+	"""
+	try:
+		cpu_count = multiprocessing.cpu_count()
+		# Use CPU count - 1 to leave one core free for system tasks
+		# Cap at 8 to avoid overwhelming the system with too many threads
+		optimal = max(1, min(cpu_count - 1, 8))
+		return optimal
+	except Exception:
+		# Fallback to 3 if CPU count detection fails
+		return 3
 
 
 def _default_base_name(input_path: str) -> str:
@@ -64,7 +83,7 @@ def cli(verbose: bool, quiet: bool) -> None:
 @click.option("--ai-model", type=click.Choice(["gpt-4o", "gemini-2.0-flash"]), default="gpt-4o", help="AI model for speaker identification.")
 @click.option("--file-filter", default="*.m4a", help="File pattern for batch processing (e.g., '*.m4a', '*.mp3'). Only used when input is a directory.")
 @click.option("--overwrite", is_flag=True, default=True, help="Overwrite existing output files.")
-@click.option("--parallel", "-p", default=3, type=int, help="Number of files to process in parallel for batch mode. Default: 3")
+@click.option("--parallel", "-p", default=None, type=int, help="Number of files to process in parallel for batch mode. Default: Auto-detected based on CPU cores (CPU count - 1)")
 def transcribe_cmd(
 	input_path: str,
 	output_dir: Optional[str],
@@ -79,9 +98,14 @@ def transcribe_cmd(
 	ai_model: str,
 	file_filter: str,
 	overwrite: bool,
-	parallel: int,
+	parallel: Optional[int],
 ) -> None:
 	"""Main transcribe command that handles both single files and batch processing."""
+	
+	# Auto-detect optimal parallel workers if not specified
+	if parallel is None:
+		parallel = _get_optimal_parallel_workers()
+		console.print(f"[dim]Auto-detected optimal parallel workers: {parallel} (CPU cores: {multiprocessing.cpu_count()})[/dim]")
 	
 	# Check if input is directory or file
 	input_path_obj = Path(input_path)
@@ -136,7 +160,7 @@ def _batch_transcribe(
 	ai_model: str,
 	file_filter: str,
 	overwrite: bool,
-	max_workers: int = 3,
+	max_workers: int,
 ) -> None:
 	"""Process all matching files in a directory with parallel execution."""
 	
@@ -147,9 +171,10 @@ def _batch_transcribe(
 		console.print(f"[yellow]No files matching '{file_filter}' found in {input_dir}[/yellow]")
 		return
 	
+	cpu_count = multiprocessing.cpu_count()
 	console.print(f"[bold cyan]Batch Processing Mode (Parallel)[/bold cyan]")
 	console.print(f"Found {len(audio_files)} file(s) matching '{file_filter}'")
-	console.print(f"Processing {max_workers} files in parallel")
+	console.print(f"Processing {max_workers} files in parallel (CPU cores: {cpu_count})")
 	console.print(f"Directory: {input_dir}\n")
 	
 	success_count = 0
