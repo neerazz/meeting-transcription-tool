@@ -309,7 +309,8 @@ def _process_single_file(
 	metrics.input_file = os.path.basename(input_path)
 	metrics.transcription_model = model
 	metrics.speaker_id_enabled = identify_speakers
-	metrics.speaker_id_model = ai_model if identify_speakers else "N/A"
+	speaker_id_enabled = identify_speakers
+	metrics.speaker_id_model = ai_model if speaker_id_enabled else "N/A"
 	
 	# Get file info
 	try:
@@ -336,7 +337,7 @@ def _process_single_file(
 	console.print(f"[bold]Output:[/bold] {output_dir}")
 	
 	# Extract and display context
-	if not speaker_context and identify_speakers:
+	if not speaker_context and speaker_id_enabled:
 		speaker_context = extract_full_context(input_path)
 		console.print(f"\n{format_context_for_display(input_path)}")
 
@@ -361,7 +362,7 @@ def _process_single_file(
 			loop = asyncio.new_event_loop()
 			asyncio.set_event_loop(loop)
 			try:
-				result = loop.run_until_complete(run_transcription_pipeline(
+				transcription_result = loop.run_until_complete(run_transcription_pipeline(
 					audio_path=input_path,
 					hf_token=hf_token,
 					**whisper_kwargs
@@ -376,10 +377,10 @@ def _process_single_file(
 			metrics.transcription_time = total_pipeline_time * 0.4  # ~40% is transcription
 			
 			# Track results
-			metrics.speakers_detected = len(set(seg.speaker for seg in result.segments))
-			metrics.speaker_segments = len(result.segments)
-			metrics.transcript_segments = len(result.segments)
-			metrics.total_words = sum(len(seg.text.split()) for seg in result.segments)
+			metrics.speakers_detected = len(set(seg.speaker for seg in transcription_result.segments))
+			metrics.speaker_segments = len(transcription_result.segments)
+			metrics.transcript_segments = len(transcription_result.segments)
+			metrics.total_words = sum(len(seg.text.split()) for seg in transcription_result.segments)
 			
 		except Exception as e:
 			console.print(f"[red]Pipeline failed:[/red] {e}")
@@ -388,51 +389,67 @@ def _process_single_file(
 			raise click.ClickException(str(e))
 
 	# AI-powered speaker identification (optional)
-	if identify_speakers:
+	if speaker_id_enabled:
 		console.print(f"\n[bold cyan]Identifying speakers with AI ({ai_model})...[/bold cyan]")
 		try:
 			speaker_id_start = time.time()
-			from .speaker_identifier import identify_speakers, apply_speaker_mappings, format_speaker_summary
+			from .speaker_identifier import (
+				identify_speakers as identify_speakers_ai,
+				apply_speaker_mappings,
+				format_speaker_summary,
+				format_segments_for_prompt,
+			)
 			
 			# Build transcript text for analysis
-			transcript_text = "\n\n".join([
-				f"[{seg.speaker}]\n{seg.text}" for seg in result.segments
+			transcript_text = format_segments_for_prompt([
+				{
+					"speaker": seg.speaker,
+					"start_ms": seg.start_ms,
+					"end_ms": seg.end_ms,
+					"text": seg.text,
+				}
+				for seg in transcription_result.segments
 			])
 			
 			# Estimate tokens for cost calculation
 			metrics.speaker_id_tokens_input = estimate_tokens(transcript_text)
 			
 			# Identify speakers - pass filename so AI can extract names from it
-			result = identify_speakers(
+			speaker_result = identify_speakers_ai(
 				transcript_text=transcript_text,
-				num_speakers=len(set(seg.speaker for seg in result.segments)),
+				num_speakers=len(set(seg.speaker for seg in transcription_result.segments)),
 				participant_names=None,  # Let AI figure out names from context and filename
 				participant_context=speaker_context,
 				filename=input_path,  # Pass filename so AI can extract names from it
 				api_key=api_key,
 				model=ai_model,
 			)
-			mappings = result.mappings
+			mappings = speaker_result.mappings
 			
 			speaker_id_end = time.time()
 			metrics.speaker_identification_time = speaker_id_end - speaker_id_start
 			metrics.speaker_id_api_calls = 1
-			if result.request_metadata:
-				metrics.speaker_id_request_preview = result.request_metadata.get("user_prompt_preview", "")
+			if speaker_result.request_metadata:
+				metrics.speaker_id_request_preview = speaker_result.request_metadata.get("user_prompt_preview", "")
+			if speaker_result.audio_file_id:
+				metrics.speaker_id_audio_file_id = speaker_result.audio_file_id
 			
-			if result.request_metadata:
+			if speaker_result.request_metadata:
 				console.print("\n[dim]AI speaker-label request metadata:[/dim]")
-				console.print(json.dumps(result.request_metadata, indent=2))
-			if result.response_metadata:
+				console.print(json.dumps(speaker_result.request_metadata, indent=2))
+			if speaker_result.response_metadata:
 				console.print("[dim]AI speaker-label response metadata:[/dim]")
-				console.print(json.dumps(result.response_metadata, indent=2))
+				console.print(json.dumps(speaker_result.response_metadata, indent=2))
+			if speaker_result.audio_file_id:
+				console.print(f"[dim]AI audio upload:[/dim] file_id={speaker_result.audio_file_id} "
+				              f"bytes={speaker_result.audio_upload_bytes:,}")
 			
 			# Estimate output tokens (typically smaller than input)
 			metrics.speaker_id_tokens_output = 200  # Typical JSON response size
 			
 			# Apply mappings
 			if mappings:
-				apply_speaker_mappings(result.segments, mappings)
+				apply_speaker_mappings(transcription_result.segments, mappings)
 				metrics.speaker_mappings = mappings
 				console.print(f"\n[green]{format_speaker_summary(mappings)}[/green]")
 			else:
@@ -451,22 +468,22 @@ def _process_single_file(
 		"source_file": os.path.abspath(input_path),
 		"model": model,
 		"generated_at": datetime.utcnow().isoformat() + "Z",
-		"speaker_identification": identify_speakers,
+		"speaker_identification": speaker_id_enabled,
 	}
 
 	export_start = time.time()
 	if "txt" in formats:
-		written.append(export_txt(result.segments, output_dir, base_name))
+		written.append(export_txt(transcription_result.segments, output_dir, base_name))
 		# If speaker identification was done, also create _speakers.txt file
-		if identify_speakers and metrics.speaker_mappings:
-			written.append(export_txt_with_speakers(result.segments, output_dir, base_name))
+		if speaker_id_enabled and metrics.speaker_mappings:
+			written.append(export_txt_with_speakers(transcription_result.segments, output_dir, base_name))
 	if "json" in formats:
-		written.append(export_json(result.segments, output_dir, base_name, metadata=metadata))
+		written.append(export_json(transcription_result.segments, output_dir, base_name, metadata=metadata))
 	if "srt" in formats:
-		written.append(export_srt(result.segments, output_dir, base_name))
+		written.append(export_srt(transcription_result.segments, output_dir, base_name))
 	if "docx" in formats:
 		try:
-			written.append(export_docx(result.segments, output_dir, base_name))
+			written.append(export_docx(transcription_result.segments, output_dir, base_name))
 		except Exception as e:
 			console.print(f"[yellow]DOCX export skipped:[/yellow] {e}")
 			metrics.warnings.append(f"DOCX export failed: {str(e)}")

@@ -32,11 +32,13 @@ class TestCli(unittest.TestCase):
             os.rmdir(self.test_dir)
 
     @patch("src.meeting_transcription_tool.cli.validate_audio_file", return_value=(True, ""))
+    @patch("src.meeting_transcription_tool.cli.identify_speakers")
     @patch("src.meeting_transcription_tool.cli.run_transcription_pipeline", new_callable=AsyncMock)
-    def test_cli_transcribe_command(self, mock_pipeline, mock_validate):
+    def test_cli_transcribe_command(self, mock_pipeline, mock_identify, mock_validate):
         # Mock the pipeline to return a predictable result
         from src.meeting_transcription_tool.transcriber import TranscriptionResult
         from src.meeting_transcription_tool.exporter import TranscriptSegment
+        from src.meeting_transcription_tool.speaker_identifier import SpeakerIdentificationResult
 
         mock_pipeline.return_value = TranscriptionResult(
             text="Hello world.",
@@ -45,6 +47,14 @@ class TestCli(unittest.TestCase):
                 TranscriptSegment(start_ms=1000, end_ms=2000, text="world.", speaker="SPEAKER_01"),
             ],
             raw={}
+        )
+
+        mock_identify.return_value = SpeakerIdentificationResult(
+            mappings={"SPEAKER_00": "Narrator", "SPEAKER_01": "Guest"},
+            model="gpt-5-mini",
+            provider="openai",
+            request_metadata={"api_method": "responses"},
+            response_metadata={"status": "mocked"},
         )
 
         # Run the CLI command

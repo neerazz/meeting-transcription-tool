@@ -28,6 +28,12 @@ dependencies = [
     "torch>=2.1.0",
 ]
 
+[project.optional-dependencies]
+docs = [
+    "mkdocs>=1.6.0",
+    "mkdocs-material>=9.5.19",
+]
+
 [project.urls]
 "Homepage" = "https://github.com/your-username/meeting-transcription-tool"
 "Bug Tracker" = "https://github.com/your-username/meeting-transcription-tool/issues"

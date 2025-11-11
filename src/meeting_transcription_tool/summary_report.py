@@ -43,6 +43,7 @@ class ProcessingMetrics:
     speaker_id_tokens_output: int = 0
     speaker_id_api_calls: int = 0
     speaker_id_request_preview: str = ""
+    speaker_id_audio_file_id: str = ""
     
     # Models used
     transcription_model: str = ""
@@ -159,6 +160,8 @@ def generate_summary_report(metrics: ProcessingMetrics) -> str:
             lines.append(f"    (No mappings generated)")
         if metrics.speaker_id_request_preview:
             lines.append(f"  Prompt Preview: {metrics.speaker_id_request_preview}")
+        if metrics.speaker_id_audio_file_id:
+            lines.append(f"  Audio File ID:  {metrics.speaker_id_audio_file_id}")
     else:
         lines.append(f"  Status:         Disabled")
     lines.append("")

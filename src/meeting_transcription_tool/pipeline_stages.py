@@ -123,7 +123,7 @@ def stage2_identify_speakers(
     
     Returns: Path to speaker mappings file
     """
-    from .speaker_identifier import identify_speakers
+    from .speaker_identifier import identify_speakers, format_segments_for_prompt
     from .context_extractor import extract_full_context
     
     # Load intermediate transcript
@@ -134,9 +134,7 @@ def stage2_identify_speakers(
     print(f"[Stage 2] Identifying speakers with AI ({ai_model})...")
     
     # Build transcript text
-    transcript_text = "\n\n".join([
-        f"[{seg['speaker']}]\n{seg['text']}" for seg in intermediate.segments
-    ])
+    transcript_text = format_segments_for_prompt(intermediate.segments)
     
     # Extract context if not provided
     if not speaker_context:
@@ -162,6 +160,9 @@ def stage2_identify_speakers(
     if result.response_metadata:
         print("[Stage 2] AI speaker-label response metadata:")
         print(json.dumps(result.response_metadata, indent=2))
+    if result.audio_file_id:
+        print(f"[Stage 2] Uploaded audio file id: {result.audio_file_id} "
+              f"({result.audio_upload_bytes:,} bytes)")
     
     # Save mappings
     mapping_data = {
@@ -172,6 +173,8 @@ def stage2_identify_speakers(
         "mappings": mappings,
         "ai_request_metadata": result.request_metadata,
         "ai_response_metadata": result.response_metadata,
+        "ai_audio_file_id": result.audio_file_id,
+        "ai_audio_bytes_uploaded": result.audio_upload_bytes,
     }
     
     os.makedirs(output_dir, exist_ok=True)

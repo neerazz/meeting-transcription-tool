@@ -7,7 +7,8 @@ transcripts and identify speakers by their actual names or descriptive roles.
 from __future__ import annotations
 
 import os
-from typing import List, Dict, Optional, Literal
+from pathlib import Path
+from typing import List, Dict, Optional, Literal, Any, Iterable, Mapping
 import json
 from dataclasses import dataclass, field
 
@@ -33,6 +34,8 @@ class SpeakerIdentificationResult:
     request_metadata: Dict[str, str] = field(default_factory=dict)
     response_metadata: Dict[str, str] = field(default_factory=dict)
     raw_response: Optional[Dict] = None
+    audio_file_id: Optional[str] = None
+    audio_upload_bytes: int = 0
 
     def as_dict(self) -> Dict[str, object]:
         """Return a JSON-serializable representation."""
@@ -42,6 +45,8 @@ class SpeakerIdentificationResult:
             "mappings": self.mappings,
             "request": self.request_metadata,
             "response": self.response_metadata,
+            "audio_file_id": self.audio_file_id,
+            "audio_bytes_uploaded": self.audio_upload_bytes,
         }
 
 
@@ -53,6 +58,7 @@ def identify_speakers(
     filename: Optional[str] = None,
     api_key: Optional[str] = None,
     model: Literal["gpt-5-mini", "gpt-4o", "gemini-2.0-flash"] = "gpt-5-mini",
+    upload_audio: bool = True,
  ) -> SpeakerIdentificationResult:
     """
     Use AI to identify speakers in a transcript and map generic labels to actual names.
@@ -78,6 +84,7 @@ def identify_speakers(
             filename,
             api_key,
             model_name=model,
+            upload_audio=upload_audio,
         )
     elif model == "gemini-2.0-flash":
         return _identify_with_gemini(
@@ -96,6 +103,7 @@ def _identify_with_openai(
     filename: Optional[str],
     api_key: Optional[str],
     model_name: str,
+    upload_audio: bool,
  ) -> SpeakerIdentificationResult:
     """Identify speakers using OpenAI GPT family (GPT-5 Mini/GPT-4o)."""
     client = OpenAI(api_key=api_key or os.getenv("OPENAI_API_KEY"))
@@ -110,28 +118,29 @@ def _identify_with_openai(
     )
     
     # System instruction optimized for speaker identification
-    system_instruction = """You are an expert conversation analyst specializing in speaker identification.
+    system_instruction = """You are an expert conversation analyst specializing in accurate speaker identification and timeline alignment.
 
-Your task: Analyze meeting transcripts to identify who each speaker is by their actual name or descriptive role.
+Your responsibilities:
+- Map each diarization label to the real-world participant name whenever possible.
+- Leverage uploaded audio, filename hints, conversation context, and explicit mentions.
+- Preserve the chronological order and ensure every segment is assigned to exactly one mapped speaker.
 
-Key abilities:
-1. **PRIORITIZE FILENAME** - Extract names from the audio filename first (most reliable source)
-2. Detect names from self-introductions, mentions, or context
-3. Infer roles from conversation dynamics (interviewer/candidate, manager/employee, host/guest)
-4. Use speech patterns, topics discussed, and power dynamics
-5. Provide clear, consistent naming throughout
+Core directives:
+1. **Filename first** — Extract potential participant names from the audio filename (e.g., "Alice_Bob_sync.m4a" implies Alice and Bob).
+2. **Uploaded audio** — Compare voices within the provided audio attachment to resolve ambiguous cases or confirm role changes.
+3. **Transcript evidence** — Use self-introductions (“Hi, this is Alice”), references (“Thanks, Bob”), or descriptions (titles, departments).
+4. **Context inference** — Apply best-judgement roles when names are absent (Interviewer, Candidate, Host, Manager, Support Engineer, etc.).
+5. **Timeline fidelity** — Never merge speakers. Maintain unique labels for distinct voices across the entire timeline.
+6. **Transparency** — Provide reasoning describing the exact clues (time, quote, filename, context) that justify each mapping.
 
-Guidelines:
-- **ALWAYS check the filename first** - it often contains participant names (e.g., "John Smith Meeting" -> look for "John" and "Smith")
-- Match filename names to speakers in the transcript
-- Use actual names when clearly mentioned or obvious from context
-- Use descriptive roles when names aren't clear (Interviewer, Manager, Host, etc.)
-- Be consistent - same person = same label throughout
-- High confidence when names match filename or are explicitly mentioned
-- Medium confidence when inferred from strong context clues
-- Low confidence when purely speculative
+JSON contract:
+- Always return a JSON object with `speaker_mappings`, `analysis`, and `confidence_notes`.
+- `speaker_mappings` is an array of objects with `generic_label`, `actual_name`, `confidence`, and `reasoning`.
+- Confidence must be one of: high, medium, low.
+- Reasoning must cite time ranges or transcript snippets (referenced by timeline markers).
+"""
 
-Output valid JSON only."""
+    audio_upload = _maybe_upload_audio(client, filename) if upload_audio else None
 
     request_metadata = _build_request_metadata(
         provider="openai",
@@ -139,28 +148,47 @@ Output valid JSON only."""
         temperature=0.2,
         system_instruction=system_instruction,
         prompt=prompt,
+        audio_metadata=audio_upload,
     )
 
-    # Call OpenAI with reasoning
-    response = client.chat.completions.create(
-        model=model_name,
-        messages=[
-            {
-                "role": "system",
-                "content": system_instruction
-            },
-            {
-                "role": "user",
-                "content": prompt
+    user_content: List[Dict[str, Any]] = [{"type": "input_text", "text": prompt}]
+    if audio_upload:
+        user_content.append({
+            "type": "input_audio",
+            "audio": {
+                "file_id": audio_upload["file_id"],
             }
-        ],
-        temperature=0.2,  # Low temperature for consistency
-        response_format={"type": "json_object"},
-        # Enable reasoning (if available in API)
-    )
+        })
+
+    api_method_used = "responses"
+    request_metadata["api_method"] = api_method_used
+    try:
+        response = client.responses.create(
+            model=model_name,
+            input=[
+                {"role": "system", "content": [{"type": "input_text", "text": system_instruction}]},
+                {"role": "user", "content": user_content},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.2,
+        )
+        content = _extract_response_text(response)
+    except Exception:
+        # Fallback to chat completions for environments without Responses API support
+        api_method_used = "chat-completions"
+        request_metadata["api_method"] = api_method_used
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": system_instruction},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+            response_format={"type": "json_object"},
+        )
+        content = response.choices[0].message.content
     
     # Parse response
-    content = response.choices[0].message.content
     result = json.loads(content)
     
     # Extract mappings
@@ -177,6 +205,10 @@ Output valid JSON only."""
         response=response,
         raw_json=result,
     )
+    response_metadata["api_method"] = api_method_used
+    if audio_upload:
+        response_metadata["audio_file_id"] = audio_upload["file_id"]
+        response_metadata["audio_bytes_uploaded"] = str(audio_upload["bytes"])
     
     return SpeakerIdentificationResult(
         mappings=mappings,
@@ -185,6 +217,8 @@ Output valid JSON only."""
         request_metadata=request_metadata,
         response_metadata=response_metadata,
         raw_response=result,
+        audio_file_id=audio_upload["file_id"] if audio_upload else None,
+        audio_upload_bytes=audio_upload["bytes"] if audio_upload else 0,
     )
 
 
@@ -331,7 +365,7 @@ def _build_optimized_prompt(
     
     prompt = f"""TASK: Identify each speaker in this transcript by their actual name or role.
 
-TRANSCRIPT:
+TRANSCRIPT SEGMENTS (chronological with timeline markers):
 {transcript_sample}
 
 CONTEXT:
@@ -352,15 +386,17 @@ ANALYSIS STRATEGY (in priority order):
 
 3. Infer from roles/dynamics:
    - Who asks questions? (Interviewer, Host, Manager)
-   - Who answers? (Candidate, Guest, Employee)  
+   - Who answers? (Candidate, Guest, Employee)
    - Who leads? (Chair, Facilitator, Senior)
    - Who reports? (Team member, Junior, Presenter)
 
-4. Use speech patterns:
+4. Use speech patterns and timeline alignment:
    - Formal vs casual language
    - Technical vs general topics
    - Decision-making authority
    - Relationship indicators
+   - Track consistent voices using the time ranges provided
+   - Reference the uploaded audio (if present) to resolve ambiguity
 
 5. Naming priority:
    a) Filename names (if match transcript) -> "Ian", "Laiks"
@@ -372,7 +408,8 @@ REQUIREMENTS:
 ✓ Be decisive - choose best available label
 ✓ Be consistent - same person = same label
 ✓ Be specific - avoid generic labels when possible
-✓ Provide reasoning - explain your identification
+✓ Provide reasoning that cites timeline evidence (e.g., "00:05s reference to 'Ian'")
+✓ Note when audio cues influenced the decision (voice match, tone, etc.)
 
 OUTPUT (JSON):
 {{
@@ -406,6 +443,7 @@ def _build_request_metadata(
     system_instruction: str,
     prompt: str,
     max_preview_chars: int = 280,
+    audio_metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, str]:
     """Create a sanitized preview of the AI request for logging/display."""
 
@@ -415,7 +453,7 @@ def _build_request_metadata(
             return sanitized[:max_preview_chars - 1] + "…"
         return sanitized
 
-    return {
+    metadata: Dict[str, str] = {
         "provider": provider,
         "model": model,
         "temperature": f"{temperature:.2f}",
@@ -423,6 +461,13 @@ def _build_request_metadata(
         "user_prompt_preview": _preview(prompt),
         "prompt_char_count": str(len(prompt)),
     }
+    if audio_metadata:
+        metadata.update({
+            "audio_filename": audio_metadata.get("filename", ""),
+            "audio_file_id": audio_metadata.get("file_id", ""),
+            "audio_bytes": str(audio_metadata.get("bytes", "")),
+        })
+    return metadata
 
 
 def _build_response_metadata(
@@ -468,6 +513,97 @@ def _trim_text(value: str, max_chars: int = 200) -> str:
     if len(text) > max_chars:
         return text[:max_chars - 1] + "…"
     return text
+
+
+def _maybe_upload_audio(client: OpenAI, filename: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Upload the audio file to OpenAI Responses API for richer analysis."""
+    if not filename:
+        return None
+    try:
+        audio_path = Path(filename)
+    except (TypeError, ValueError):
+        return None
+
+    if not audio_path.exists() or not audio_path.is_file():
+        return None
+
+    try:
+        file_size = audio_path.stat().st_size
+        with audio_path.open("rb") as file_handle:
+            uploaded = client.files.create(
+                file=file_handle,
+                purpose="assistants",
+            )
+    except Exception as exc:  # pragma: no cover - network/API failure path
+        print(f"[AI] Audio upload skipped: {exc}")
+        return None
+
+    return {
+        "file_id": uploaded.id,
+        "filename": audio_path.name,
+        "bytes": file_size,
+    }
+
+
+def _extract_response_text(response: Any) -> str:
+    """Extract assistant JSON text from the OpenAI Responses API reply."""
+    if hasattr(response, "output_text") and response.output_text:
+        return response.output_text
+
+    output = getattr(response, "output", None)
+    if output:
+        chunks: List[str] = []
+        for item in output:
+            content = getattr(item, "content", None)
+            if not content:
+                continue
+            for block in content:
+                block_type = getattr(block, "type", None)
+                if block_type in {"output_text", "text"}:
+                    text_val = getattr(block, "text", "")
+                    if text_val:
+                        chunks.append(text_val)
+        if chunks:
+            return "".join(chunks)
+
+    # Fallback for compatibility with chat completions style objects
+    if hasattr(response, "choices"):
+        return response.choices[0].message.content
+
+    raise ValueError("Unable to extract response text from OpenAI response object.")
+
+
+def _coerce_ms(value: Any) -> Optional[float]:
+    """Convert a timestamp value to milliseconds as float."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def format_segments_for_prompt(segments: Iterable[Mapping[str, Any]]) -> str:
+    """Build a timeline-aware transcript string for AI consumption."""
+    formatted_segments: List[str] = []
+
+    for index, segment in enumerate(segments, start=1):
+        speaker = str(segment.get("speaker", "UNKNOWN")).strip() or "UNKNOWN"
+        text = str(segment.get("text", "")).strip()
+        start_ms = _coerce_ms(segment.get("start_ms"))
+        end_ms = _coerce_ms(segment.get("end_ms"))
+
+        if start_ms is not None and end_ms is not None:
+            time_range = f"{start_ms/1000:.2f}s → {end_ms/1000:.2f}s"
+        elif start_ms is not None:
+            time_range = f"≥ {start_ms/1000:.2f}s"
+        else:
+            time_range = "unknown"
+
+        header = f"[{index:02d}] {speaker} | {time_range}"
+        if not text:
+            text = "(no transcript text captured)"
+
+        formatted_segments.append(f"{header}\n{text}")
+
+    return "\n\n".join(formatted_segments)
 
 
 def apply_speaker_mappings(
