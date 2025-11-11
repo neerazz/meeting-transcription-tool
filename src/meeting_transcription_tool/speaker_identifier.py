@@ -28,6 +28,7 @@ def identify_speakers(
     num_speakers: Optional[int] = None,
     participant_names: Optional[List[str]] = None,
     participant_context: Optional[str] = None,
+    filename: Optional[str] = None,
     api_key: Optional[str] = None,
     model: Literal["gpt-4o", "gemini-2.0-flash"] = "gpt-4o",
 ) -> Dict[str, str]:
@@ -39,6 +40,7 @@ def identify_speakers(
         num_speakers: Number of speakers in the conversation (optional)
         participant_names: List of known participant names (optional, rarely needed)
         participant_context: Additional context about the meeting/participants (optional)
+        filename: Name of the audio file (optional, often contains participant names)
         api_key: OpenAI API key (optional, will use env var if not provided)
         model: AI model to use - "gpt-4o" (with reasoning) or "gemini-2.0-flash"
     
@@ -49,12 +51,12 @@ def identify_speakers(
     if model == "gpt-4o":
         return _identify_with_openai(
             transcript_text, num_speakers, participant_names, 
-            participant_context, api_key
+            participant_context, filename, api_key
         )
     elif model == "gemini-2.0-flash":
         return _identify_with_gemini(
             transcript_text, num_speakers, participant_names,
-            participant_context, api_key
+            participant_context, filename, api_key
         )
     else:
         raise ValueError(f"Unsupported model: {model}")
@@ -65,6 +67,7 @@ def _identify_with_openai(
     num_speakers: Optional[int],
     participant_names: Optional[List[str]],
     participant_context: Optional[str],
+    filename: Optional[str],
     api_key: Optional[str],
 ) -> Dict[str, str]:
     """Identify speakers using GPT-4o with reasoning."""
@@ -75,7 +78,8 @@ def _identify_with_openai(
         transcript_text,
         num_speakers,
         participant_names,
-        participant_context
+        participant_context,
+        filename
     )
     
     # System instruction optimized for speaker identification
@@ -84,16 +88,19 @@ def _identify_with_openai(
 Your task: Analyze meeting transcripts to identify who each speaker is by their actual name or descriptive role.
 
 Key abilities:
-1. Detect names from self-introductions, mentions, or context
-2. Infer roles from conversation dynamics (interviewer/candidate, manager/employee, host/guest)
-3. Use speech patterns, topics discussed, and power dynamics
-4. Provide clear, consistent naming throughout
+1. **PRIORITIZE FILENAME** - Extract names from the audio filename first (most reliable source)
+2. Detect names from self-introductions, mentions, or context
+3. Infer roles from conversation dynamics (interviewer/candidate, manager/employee, host/guest)
+4. Use speech patterns, topics discussed, and power dynamics
+5. Provide clear, consistent naming throughout
 
 Guidelines:
+- **ALWAYS check the filename first** - it often contains participant names (e.g., "John Smith Meeting" -> look for "John" and "Smith")
+- Match filename names to speakers in the transcript
 - Use actual names when clearly mentioned or obvious from context
 - Use descriptive roles when names aren't clear (Interviewer, Manager, Host, etc.)
 - Be consistent - same person = same label throughout
-- High confidence when names are explicitly mentioned
+- High confidence when names match filename or are explicitly mentioned
 - Medium confidence when inferred from strong context clues
 - Low confidence when purely speculative
 
@@ -136,6 +143,7 @@ def _identify_with_gemini(
     num_speakers: Optional[int],
     participant_names: Optional[List[str]],
     participant_context: Optional[str],
+    filename: Optional[str],
     api_key: Optional[str],
 ) -> Dict[str, str]:
     """Identify speakers using Gemini 2.0 Flash."""
@@ -156,15 +164,19 @@ def _identify_with_gemini(
         transcript_text,
         num_speakers,
         participant_names,
-        participant_context
+        participant_context,
+        filename
     )
     
     # System instruction for Gemini
     system_instruction = """You are an expert at analyzing conversations and identifying speakers.
 
 Analyze the transcript and identify each speaker by:
-1. Their actual name (if mentioned or obvious)
-2. Their role (Interviewer, Manager, Host, etc.) if name isn't clear
+1. **FILENAME FIRST** - Extract names from the audio filename (most reliable source)
+2. Their actual name (if mentioned or obvious from transcript)
+3. Their role (Interviewer, Manager, Host, etc.) if name isn't clear
+
+**IMPORTANT**: Always check the filename for participant names first, then match them to speakers in the transcript.
 
 Be consistent and confident. Output valid JSON only."""
     
@@ -196,7 +208,8 @@ def _build_optimized_prompt(
     transcript_text: str,
     num_speakers: Optional[int],
     participant_names: Optional[List[str]],
-    participant_context: Optional[str]
+    participant_context: Optional[str],
+    filename: Optional[str] = None
 ) -> str:
     """Build optimized prompt for speaker identification."""
     
@@ -212,8 +225,13 @@ def _build_optimized_prompt(
     else:
         transcript_sample = transcript_text
     
-    # Build context section
+    # Build context section - FILENAME IS HIGH PRIORITY
     context_parts = []
+    if filename:
+        # Extract just the filename without extension for cleaner display
+        from pathlib import Path
+        filename_clean = Path(filename).stem
+        context_parts.append(f"• FILENAME (IMPORTANT - often contains participant names): {filename_clean}")
     if num_speakers:
         context_parts.append(f"• Number of speakers: {num_speakers}")
     if participant_names:
@@ -223,7 +241,17 @@ def _build_optimized_prompt(
     
     context_section = "\n".join(context_parts) if context_parts else "• No additional context provided"
     
-    # Optimized prompt with clear structure
+    # Optimized prompt with clear structure - emphasize filename usage
+    filename_instruction = ""
+    if filename:
+        filename_instruction = """
+⚠️ CRITICAL: The FILENAME above often contains participant names!
+- Extract names from the filename (e.g., "John Smith Interview" -> look for "John" and "Smith")
+- Match these names to speakers in the transcript
+- Filename names should be your PRIMARY source when available
+- Only use generic roles if filename names don't match any speakers
+"""
+    
     prompt = f"""TASK: Identify each speaker in this transcript by their actual name or role.
 
 TRANSCRIPT:
@@ -231,29 +259,37 @@ TRANSCRIPT:
 
 CONTEXT:
 {context_section}
+{filename_instruction}
 
-ANALYSIS STRATEGY:
-1. Scan for explicit names:
+ANALYSIS STRATEGY (in priority order):
+1. **FILENAME FIRST** (if provided):
+   - Extract participant names from the filename
+   - Match these names to speakers in the transcript
+   - Filename is often the most reliable source of names
+   - Example: "Ian Laiks 1on1" -> look for "Ian" and "Laiks" in transcript
+
+2. Scan transcript for explicit names:
    - Self-introductions: "I'm X", "My name is X", "This is X"
    - References: "Thanks X", "Hi X", "X mentioned..."
    - Email signatures, titles mentioned
 
-2. Infer from roles/dynamics:
+3. Infer from roles/dynamics:
    - Who asks questions? (Interviewer, Host, Manager)
    - Who answers? (Candidate, Guest, Employee)  
    - Who leads? (Chair, Facilitator, Senior)
    - Who reports? (Team member, Junior, Presenter)
 
-3. Use speech patterns:
+4. Use speech patterns:
    - Formal vs casual language
    - Technical vs general topics
    - Decision-making authority
    - Relationship indicators
 
-4. Naming priority:
-   a) Actual name if clearly mentioned -> "Sarah"
-   b) Role if no name but clear -> "Interviewer"
-   c) Descriptive role if ambiguous -> "Manager"
+5. Naming priority:
+   a) Filename names (if match transcript) -> "Ian", "Laiks"
+   b) Actual name if clearly mentioned -> "Sarah"
+   c) Role if no name but clear -> "Interviewer"
+   d) Descriptive role if ambiguous -> "Manager"
 
 REQUIREMENTS:
 ✓ Be decisive - choose best available label

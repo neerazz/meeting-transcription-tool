@@ -143,13 +143,14 @@ def stage2_identify_speakers(
         speaker_context = extract_full_context(intermediate.audio_file)
         print(f"[Stage 2] Extracted context: {speaker_context}")
     
-    # Identify speakers
+    # Identify speakers - pass filename so AI can extract names from it
     num_speakers = len(set(seg['speaker'] for seg in intermediate.segments))
     mappings = identify_speakers(
         transcript_text=transcript_text,
         num_speakers=num_speakers,
         participant_names=None,
         participant_context=speaker_context,
+        filename=intermediate.audio_file,  # Pass filename so AI can extract names from it
         api_key=api_key,
         model=ai_model,
     )

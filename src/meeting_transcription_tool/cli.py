@@ -160,6 +160,9 @@ def _batch_transcribe(
 	
 	def process_file(audio_file: Path) -> tuple[str, bool, Optional[str], Optional[ProcessingMetrics]]:
 		"""Process a single file and return results."""
+		import threading
+		thread_id = threading.current_thread().name
+		console.print(f"[cyan][{thread_id}] Starting: {audio_file.name}[/cyan]")
 		try:
 			metrics = _process_single_file(
 				input_path=str(audio_file),
@@ -178,6 +181,7 @@ def _batch_transcribe(
 			)
 			return (audio_file.name, True, None, metrics)
 		except Exception as e:
+			console.print(f"[red][{thread_id}] Failed: {audio_file.name} - {e}[/red]")
 			return (audio_file.name, False, str(e), None)
 	
 	# Process files in parallel
@@ -287,11 +291,18 @@ def _process_single_file(
 				"language": language,
 				"temperature": temperature,
 			}
-			result = asyncio.run(run_transcription_pipeline(
-				audio_path=input_path,
-				hf_token=hf_token,
-				**whisper_kwargs
-			))
+			# Use thread-safe async execution for parallel processing
+			# Each thread needs its own event loop to avoid conflicts
+			loop = asyncio.new_event_loop()
+			asyncio.set_event_loop(loop)
+			try:
+				result = loop.run_until_complete(run_transcription_pipeline(
+					audio_path=input_path,
+					hf_token=hf_token,
+					**whisper_kwargs
+				))
+			finally:
+				loop.close()
 			pipeline_end = time.time()
 			
 			# Track timing (approximate split)
@@ -325,12 +336,13 @@ def _process_single_file(
 			# Estimate tokens for cost calculation
 			metrics.speaker_id_tokens_input = estimate_tokens(transcript_text)
 			
-			# Identify speakers (no names required - AI will figure it out!)
+			# Identify speakers - pass filename so AI can extract names from it
 			mappings = identify_speakers(
 				transcript_text=transcript_text,
 				num_speakers=len(set(seg.speaker for seg in result.segments)),
-				participant_names=None,  # Let AI figure out names from context
+				participant_names=None,  # Let AI figure out names from context and filename
 				participant_context=speaker_context,
+				filename=input_path,  # Pass filename so AI can extract names from it
 				api_key=api_key,
 				model=ai_model,
 			)
