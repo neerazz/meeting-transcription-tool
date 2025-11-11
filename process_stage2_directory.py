@@ -45,7 +45,7 @@ def process_stage2_file(stage1_file: Path, output_dir: str, ai_model: str, api_k
 @click.option("--ai-model", type=click.Choice(["gpt-5-mini", "gpt-4o", "gemini-2.0-flash"]), 
               default="gpt-5-mini", help="AI model for speaker identification")
 @click.option("--api-key", default=None, help="OpenAI/Google API key")
-@click.option("--parallel", "-p", default=3, type=int, help="Number of parallel workers (default: 3)")
+@click.option("--parallel", "-p", default=None, type=int, help="Number of parallel workers (default: 50% of CPU cores)")
 @click.option("--timeout", default=300, type=int, help="Timeout per file in seconds (default: 300)")
 def main(directory, output_dir, ai_model, api_key, parallel, timeout):
     """Process all stage1 transcript files in a directory through stage2."""
@@ -60,6 +60,13 @@ def main(directory, output_dir, ai_model, api_key, parallel, timeout):
     if not stage1_files:
         console.print(f"[yellow]No stage1 transcript files found in {directory}[/yellow]")
         return
+    
+    # Auto-calculate parallel workers if not specified (50% of CPU)
+    if parallel is None:
+        import multiprocessing
+        cpu_count = multiprocessing.cpu_count()
+        parallel = max(1, min((cpu_count + 1) // 2, 16))
+        console.print(f"[dim]Auto-detected {cpu_count} CPU cores, using {parallel} workers (50% utilization)[/dim]")
     
     console.print(f"[bold]Found {len(stage1_files)} stage1 transcript files[/bold]")
     console.print(f"[bold]Output directory:[/bold] {output_dir}")

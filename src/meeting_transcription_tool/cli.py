@@ -40,19 +40,21 @@ LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 def _get_optimal_parallel_workers() -> int:
 	"""
 	Calculate optimal number of parallel workers based on CPU capacity.
+	Uses ~50% of CPU cores for maximum parallelization without hanging.
 	
 	Returns:
-		Number of workers (CPU count - 1, minimum 1, maximum 8)
+		Number of workers (50% of CPU cores, minimum 1, maximum 16)
 	"""
 	try:
 		cpu_count = multiprocessing.cpu_count()
-		# Use CPU count - 1 to leave one core free for system tasks
-		# Cap at 8 to avoid overwhelming the system with too many threads
-		optimal = max(1, min(cpu_count - 1, 8))
+		# Use 50% of CPU cores, rounded up
+		optimal = max(1, min((cpu_count + 1) // 2, 16))
+		logger.info(f"CPU cores: {cpu_count}, optimal parallel workers: {optimal} (50% utilization)")
 		return optimal
 	except Exception:
-		# Fallback to 3 if CPU count detection fails
-		return 3
+		# Fallback to 2 if CPU count detection fails
+		logger.warning("CPU count detection failed, using 2 workers")
+		return 2
 
 
 def _default_base_name(input_path: str) -> str:

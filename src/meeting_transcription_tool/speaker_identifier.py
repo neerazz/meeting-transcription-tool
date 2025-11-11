@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 
 from openai import OpenAI
 
+from .ai_logger import get_ai_logger
+
 
 @dataclass
 class SpeakerMapping:
@@ -142,6 +144,9 @@ JSON contract:
 
     audio_upload = _maybe_upload_audio(client, filename) if upload_audio else None
 
+    # Initialize AI logger for comprehensive request/response tracking
+    ai_logger = get_ai_logger()
+    
     request_metadata = _build_request_metadata(
         provider="openai",
         model=model_name,
@@ -150,7 +155,7 @@ JSON contract:
         prompt=prompt,
         audio_metadata=audio_upload,
     )
-
+    
     # Use chat completions API (standard OpenAI API)
     # Note: Audio upload via file_id requires the model to support it
     # For GPT-5 Mini, we'll include audio metadata in the prompt if available
@@ -164,6 +169,29 @@ JSON contract:
 
 NOTE: The original audio file has been uploaded (file_id: {audio_upload['file_id']}, {audio_upload['bytes']:,} bytes).
 Use this information to help identify speakers by voice characteristics when available."""
+    
+    # Prepare full request data for logging
+    full_request_data = {
+        "model": model_name,
+        "messages": [
+            {"role": "system", "content": system_instruction},
+            {"role": "user", "content": enhanced_prompt},
+        ],
+        "temperature": 0.2,
+        "response_format": {"type": "json_object"} if model_name != "gpt-5-mini" else None,
+        "audio_upload": audio_upload,
+    }
+    
+    # Estimate tokens (rough: 1 token ≈ 4 chars)
+    estimated_tokens = len(system_instruction + enhanced_prompt) // 4
+    
+    # Log request
+    request_log_file = ai_logger.log_request(
+        provider="openai",
+        model=model_name,
+        request_data=full_request_data,
+        estimated_tokens=estimated_tokens,
+    )
     
     # Add timeout to prevent hanging (300 seconds = 5 minutes)
     timeout_seconds = 300.0
@@ -252,6 +280,40 @@ Use this information to help identify speakers by voice characteristics when ava
     if audio_upload:
         response_metadata["audio_file_id"] = audio_upload["file_id"]
         response_metadata["audio_bytes_uploaded"] = str(audio_upload["bytes"])
+    
+    # Extract token usage and calculate cost
+    token_usage = {}
+    cost_estimate = 0.0
+    if hasattr(response, 'usage'):
+        usage = response.usage
+        token_usage = {
+            "input": getattr(usage, 'prompt_tokens', 0) or getattr(usage, 'input_tokens', 0),
+            "output": getattr(usage, 'completion_tokens', 0) or getattr(usage, 'output_tokens', 0),
+            "total": getattr(usage, 'total_tokens', 0),
+        }
+        
+        # Calculate cost based on model
+        if model_name == "o1-mini" or model_name == "gpt-5-mini":
+            # o1-mini pricing: $0.15/1M input, $0.60/1M output
+            cost_estimate = (token_usage["input"] / 1_000_000) * 0.15 + (token_usage["output"] / 1_000_000) * 0.60
+        elif model_name == "gpt-4o":
+            # gpt-4o pricing: $2.50/1M input, $10/1M output
+            cost_estimate = (token_usage["input"] / 1_000_000) * 2.50 + (token_usage["output"] / 1_000_000) * 10.00
+    
+    # Log response with full details
+    response_data = {
+        "content": content,
+        "parsed_result": result,
+        "mappings": mappings,
+        "model_used": model_name,
+    }
+    
+    ai_logger.log_response(
+        request_log_file=request_log_file,
+        response_data=response_data,
+        actual_tokens=token_usage if token_usage else None,
+        cost_estimate=cost_estimate if cost_estimate > 0 else None,
+    )
     
     return SpeakerIdentificationResult(
         mappings=mappings,
@@ -365,18 +427,38 @@ def _build_optimized_prompt(
     participant_context: Optional[str],
     filename: Optional[str] = None
 ) -> str:
-    """Build optimized prompt for speaker identification."""
+    """
+    Build optimized prompt for speaker identification.
     
-    # Intelligent truncation: keep beginning (introductions) and sample middle
-    max_chars = 4000
-    if len(transcript_text) > max_chars:
-        # Keep first 2500 chars (usually has introductions)
-        start_part = transcript_text[:2500]
-        # Sample from middle to get conversation flow
-        middle_start = len(transcript_text) // 2 - 750
-        middle_part = transcript_text[middle_start:middle_start + 1500]
-        transcript_sample = start_part + "\n\n[... middle section ...]\n\n" + middle_part
+    Strategy:
+    1. If filename provides names/context, use truncated transcript (cost optimization)
+    2. If filename doesn't help, use FULL conversation (quality optimization)
+    """
+    
+    # Check if filename provides useful context
+    filename_has_context = False
+    if filename:
+        from .context_extractor import extract_context_from_filename
+        context, names = extract_context_from_filename(filename)
+        if names or context:
+            filename_has_context = True
+    
+    # If filename doesn't help, use FULL transcript for maximum quality
+    # Otherwise, use intelligent truncation to save tokens
+    if filename_has_context:
+        # Intelligent truncation: keep beginning (introductions) and sample middle
+        max_chars = 8000  # Increased for better context
+        if len(transcript_text) > max_chars:
+            # Keep first 4000 chars (usually has introductions and key context)
+            start_part = transcript_text[:4000]
+            # Sample from middle to get conversation flow
+            middle_start = len(transcript_text) // 2 - 2000
+            middle_part = transcript_text[middle_start:middle_start + 4000]
+            transcript_sample = start_part + "\n\n[... middle section ...]\n\n" + middle_part
+        else:
+            transcript_sample = transcript_text
     else:
+        # No filename context - use FULL transcript for best quality
         transcript_sample = transcript_text
     
     # Build context section - FILENAME IS HIGH PRIORITY
