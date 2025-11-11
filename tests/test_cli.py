@@ -1,6 +1,6 @@
 import os
 import unittest
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch, AsyncMock, MagicMock
 from click.testing import CliRunner
 
 # Make sure src is in the path for tests to run
@@ -32,9 +32,10 @@ class TestCli(unittest.TestCase):
             os.rmdir(self.test_dir)
 
     @patch("src.meeting_transcription_tool.cli.validate_audio_file", return_value=(True, ""))
-    @patch("src.meeting_transcription_tool.cli.identify_speakers")
     @patch("src.meeting_transcription_tool.cli.run_transcription_pipeline", new_callable=AsyncMock)
-    def test_cli_transcribe_command(self, mock_pipeline, mock_identify, mock_validate):
+    @patch("src.meeting_transcription_tool.speaker_identifier.get_ai_logger")
+    @patch("src.meeting_transcription_tool.speaker_identifier.identify_speakers")
+    def test_cli_transcribe_command(self, mock_identify, mock_logger, mock_pipeline, mock_validate):
         # Mock the pipeline to return a predictable result
         from src.meeting_transcription_tool.transcriber import TranscriptionResult
         from src.meeting_transcription_tool.exporter import TranscriptSegment
@@ -49,12 +50,21 @@ class TestCli(unittest.TestCase):
             raw={}
         )
 
+        # Mock AI logger to prevent file writes during tests
+        mock_logger_instance = MagicMock()
+        mock_logger_instance.log_request.return_value = "/tmp/test_request.json"
+        mock_logger_instance.log_response.return_value = "/tmp/test_response.json"
+        mock_logger.return_value = mock_logger_instance
+        
         mock_identify.return_value = SpeakerIdentificationResult(
             mappings={"SPEAKER_00": "Narrator", "SPEAKER_01": "Guest"},
             model="gpt-5-mini",
             provider="openai",
-            request_metadata={"api_method": "responses"},
+            request_metadata={"api_method": "chat-completions"},
             response_metadata={"status": "mocked"},
+            raw_response={"speaker_mappings": []},
+            audio_file_id=None,
+            audio_upload_bytes=0,
         )
 
         # Run the CLI command
