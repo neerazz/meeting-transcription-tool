@@ -46,7 +46,7 @@ HUGGING_FACE_TOKEN=hf_your_token_here
 Run this command to verify:
 
 ```powershell
-python tests/test_real_audio.py --audio-file "your-audio-file.m4a"
+python -m src.meeting_transcription_tool.cli transcribe --input "your-audio-file.m4a"
 ```
 
 If you see errors about "gated" or "private" models, make sure you:
@@ -89,7 +89,7 @@ This is a one-time setup per Hugging Face account.
 After accepting the agreements and setting your token, you can run the transcription tool normally:
 
 ```powershell
-python tests/test_real_audio.py --audio-file "path/to/audio.m4a"
+python -m src.meeting_transcription_tool.cli transcribe --input "path/to/audio.m4a"
 ```
 
 The tool will:

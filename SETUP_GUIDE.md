@@ -53,12 +53,22 @@ export OPENAI_API_KEY="sk-your-openai-api-key-here"
 export HUGGING_FACE_TOKEN="hf_your-huggingface-token-here"
 ```
 
-## Step 3: Test Your Audio File
+## Step 3: Run Your First Transcription
 
-Once your API keys are set, run:
+Once your API keys are set, try the main CLI:
 
 ```powershell
-python tests/test_real_audio.py --audio-file "F:\Meta\Final Proof With Audio and Transcript\Ian Laiks 1on1 10-30 12-10.m4a" --output-dir "F:\Meta\Final Proof With Audio and Transcript\outputs"
+python -m src.meeting_transcription_tool.cli transcribe `
+    --input "F:\Meta\Final Proof With Audio and Transcript\Ian Laiks 1on1 10-30 12-10.m4a" `
+    --output-dir "F:\Meta\Final Proof With Audio and Transcript\outputs"
+```
+
+To process an entire directory (auto-parallelised based on CPU cores):
+
+```powershell
+python -m src.meeting_transcription_tool.cli transcribe `
+    --input "F:\Meta\Final Proof With Audio and Transcript" `
+    --file-filter "*.m4a"
 ```
 
 ### What the Tool Will Do
@@ -68,7 +78,7 @@ python tests/test_real_audio.py --audio-file "F:\Meta\Final Proof With Audio and
 3. **Transcription** - Convert speech to text (using OpenAI Whisper)
 4. **Speaker Mapping** - Match transcribed text to speakers
 5. **Export** - Generate transcript files in multiple formats:
-   - TXT: `[00:01:23 - 00:01:45] SPEAKER_00: Hello everyone...`
+   - TXT: `[00:01:23 - 00:01:45] Ian: Hello everyone...`
    - JSON: Structured data with metadata
    - SRT: Subtitle format
    - DOCX: Word document (optional)
@@ -135,10 +145,10 @@ $env:OPENAI_API_KEY = "sk-..."
 $env:HUGGING_FACE_TOKEN = "hf_..."
 
 # 3. Run transcription
-python tests/test_real_audio.py --audio-file "your-file.m4a"
+python -m src.meeting_transcription_tool.cli transcribe --input "your-file.m4a"
 
 # 4. Check outputs folder
-ls outputs\
+ls
 ```
 
 ## Support

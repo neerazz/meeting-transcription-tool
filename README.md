@@ -50,7 +50,7 @@ GOOGLE_API_KEY=your_google_key_here  # Optional, for Gemini
 
 ## Usage
 
-### Single File
+### Single File (default settings)
 
 ```powershell
 # Full transcription with AI speaker identification (default)
@@ -64,14 +64,25 @@ python -m src.meeting_transcription_tool.cli transcribe --input "meeting.m4a"
 - `meeting.srt` - Subtitles
 - `meeting_SUMMARY.txt` - Processing report
 
-### Batch Processing
+### Entire Directory (auto parallelism)
 
 ```powershell
-# Process all M4A files in directory (3 in parallel)
+# Process every M4A file in a directory
 python -m src.meeting_transcription_tool.cli transcribe `
     --input "F:\Meetings\" `
-    --file-filter "*.m4a" `
-    --parallel 3
+    --file-filter "*.m4a"
+```
+
+> ℹ️ Parallel workers are auto-detected (CPU cores − 1, capped at 8).  
+> The CLI prints the detected value before processing begins.
+
+### Directory With Manual Parallel Override
+
+```powershell
+# Force 6 parallel workers (overrides auto-detected value)
+python -m src.meeting_transcription_tool.cli transcribe `
+    --input "F:\Meetings\" `
+    --parallel 6
 ```
 
 **Output**: All files transcribed + **ONE** consolidated summary: `batch_summary_YYYYMMDD_HHMMSS.txt`
@@ -119,14 +130,100 @@ python -m src.meeting_transcription_tool.cli_stages stage3 `
 |--------|-------------|---------|
 | `--input` `-i` | Audio file or directory | Required |
 | `--output-dir` `-o` | Output directory | Same as input |
+| `--formats` | Output formats (`--formats txt json`) | txt,json,srt |
+| `--language` | Whisper language hint (ISO code) | Auto-detect |
+| `--temperature` | Whisper sampling temperature | 0.0 |
+| `--model` | Whisper model name | whisper-1 |
+| `--api-key` | Override `OPENAI_API_KEY` | `.env` / env var |
+| `--hf-token` | Override `HUGGING_FACE_TOKEN` | `.env` / env var |
 | `--identify-speakers` | AI speaker identification | **Enabled** |
 | `--no-identify-speakers` | Disable AI speaker ID | - |
 | `--speaker-context` | Meeting context | Auto-extract |
 | `--ai-model` | AI model (gpt-4o/gemini-2.0-flash) | gpt-4o |
 | `--file-filter` | Batch file pattern | *.m4a |
-| `--parallel` `-p` | Parallel workers | 3 |
-| `--formats` | Output formats | txt,json,srt |
-| `--language` | Audio language | Auto |
+| `--parallel` `-p` | Parallel workers | Auto (CPU cores − 1, max 8) |
+| `--overwrite` | Overwrite existing output files | Enabled |
+
+---
+
+## Command Recipes
+
+Use these copy‑paste friendly examples to cover common scenarios:
+
+### 1. Process a Single File With Default Settings
+```powershell
+python -m src.meeting_transcription_tool.cli transcribe --input "C:\Audio\interview.m4a"
+```
+
+### 2. Process an Entire Directory (auto parallel)
+```powershell
+python -m src.meeting_transcription_tool.cli transcribe --input "F:\Meta\Quarterly Reviews"
+```
+
+### 3. Restrict to MP3 Files
+```powershell
+python -m src.meeting_transcription_tool.cli transcribe `
+    --input "F:\Meta\Raw Audio" `
+    --file-filter "*.mp3"
+```
+
+### 4. Choose a Custom Output Folder
+```powershell
+python -m src.meeting_transcription_tool.cli transcribe `
+    --input "C:\Audio\demo.m4a" `
+    --output-dir "C:\Transcripts\demo-output"
+```
+
+### 5. Export Only TXT + JSON
+```powershell
+python -m src.meeting_transcription_tool.cli transcribe `
+    --input "C:\Audio\standup.m4a" `
+    --formats txt json
+```
+
+### 6. Provide Meeting Context (improves name resolution)
+```powershell
+python -m src.meeting_transcription_tool.cli transcribe `
+    --input "C:\Audio\board-meeting.m4a" `
+    --speaker-context "Quarterly board review with CEO Alice Chen and CFO David Ortiz"
+```
+
+### 7. Force English Transcription & Warmer Temperature
+```powershell
+python -m src.meeting_transcription_tool.cli transcribe `
+    --input "C:\Audio\podcast-episode.mp3" `
+    --language en `
+    --temperature 0.4
+```
+
+### 8. Use Gemini for Speaker Identification
+```powershell
+python -m src.meeting_transcription_tool.cli transcribe `
+    --input "C:\Audio\panel.m4a" `
+    --ai-model gemini-2.0-flash
+```
+
+### 9. Disable AI Speaker Identification Entirely
+```powershell
+python -m src.meeting_transcription_tool.cli transcribe `
+    --input "C:\Audio\training-session.m4a" `
+    --no-identify-speakers
+```
+
+### 10. Supply API Credentials Inline (overrides `.env`)
+```powershell
+python -m src.meeting_transcription_tool.cli transcribe `
+    --input "C:\Audio\press-briefing.m4a" `
+    --api-key sk-your-openai-key `
+    --hf-token hf_your_hf_token
+```
+
+### 11. Manual Parallel Override (power users)
+```powershell
+python -m src.meeting_transcription_tool.cli transcribe `
+    --input "F:\Meta\All Hands\" `
+    --parallel 5
+```
 
 ---
 
