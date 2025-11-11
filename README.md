@@ -1,83 +1,271 @@
 # Meeting Transcription Tool
 
-A Python-based CLI to transcribe audio files using OpenAI Whisper for transcription and `pyannote.audio` for speaker diarization.
-
-## Disclaimer
-
-This is a proof-of-concept project and is not intended for use in production environments. It is a demonstration of how to combine speech-to-text and speaker diarization technologies to create a meeting transcription tool. The accuracy of the transcription and diarization is dependent on the underlying models and the quality of the audio input.
+Professional-grade audio transcription with AI-powered speaker identification, batch processing, and clean output.
 
 ## Features
 
-- **Transcription**: High-quality speech-to-text conversion using OpenAI Whisper.
-- **Speaker Diarization**: Identifies and labels different speakers in the audio using `pyannote.audio`.
-- **Timestamps**: Provides precise timestamps for each spoken segment.
-- **Export Options**: Export transcripts in multiple formats (TXT, DOCX, JSON, SRT).
-- **CLI Interface**: A simple and easy-to-use command-line interface.
+✅ **Transcription** - OpenAI Whisper API  
+✅ **Speaker Diarization** - pyannote.audio identifies different speakers  
+✅ **AI Speaker Identification** - GPT-4o or Gemini identifies speakers by name (enabled by default)  
+✅ **Clean Text Output** - Filters garbled characters and silence artifacts  
+✅ **Multiple Formats** - TXT, JSON, SRT, DOCX  
+✅ **Batch Processing** - Process multiple files in parallel  
+✅ **Modular Pipeline** - Test stages independently  
+✅ **Smart Context Extraction** - Automatically extracts meeting info from filenames
 
-## Setup and Installation
+---
 
-### Prerequisites
-
-- Python 3.9 or higher
-- `pip` and `venv`
+## Quick Start
 
 ### Installation
 
-1.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/your-username/meeting-transcription-tool.git
-    cd meeting-transcription-tool
-    ```
+```powershell
+# Clone and setup
+git clone <repository>
+cd meeting-transcription-tool
+python -m venv .venv
+.\.venv\Scripts\activate
 
-2.  **Create and activate a virtual environment:**
-    ```bash
-    python -m venv .venv
-    source .venv/bin/activate  # On Windows, use: .venv\Scripts\activate
-    ```
+# Install dependencies
+pip install -r requirements.txt
 
-3.  **Install the required dependencies:**
-    ```bash
-    pip install -r requirements.txt
-    ```
+# Install FFmpeg (required for M4A files)
+# See INSTALL_FFMPEG.md for details
+choco install ffmpeg
+```
 
-4.  **Set up your API keys:**
+### Setup API Keys
 
-    Create a `.env` file in the root of the project by copying the `.env.example` file:
-    ```bash
-    cp .env.example .env
-    ```
+Create `.env` file in project root:
 
-    Now, edit the `.env` file with your API keys:
+```
+OPENAI_API_KEY=your_openai_key_here
+HUGGING_FACE_TOKEN=your_hf_token_here
+GOOGLE_API_KEY=your_google_key_here  # Optional, for Gemini
+```
 
-    -   `OPENAI_API_KEY`: Your API key for the OpenAI API.
-    -   `HUGGING_FACE_TOKEN`: Your Hugging Face Hub API token. You can get one [here](https://huggingface.co/settings/tokens). This is required to download the `pyannote.audio` models.
+**Note**: Accept Hugging Face model agreements (see HUGGINGFACE_SETUP.md)
+
+---
 
 ## Usage
 
-You can use the tool through the command-line interface.
+### Single File
 
-```bash
-python -m src.meeting_transcription_tool.cli transcribe \
-    --input "path/to/your/audio.mp3" \
-    --output-dir "output_directory"
+```powershell
+# Full transcription with AI speaker identification (default)
+python -m src.meeting_transcription_tool.cli transcribe --input "meeting.m4a"
 ```
 
-### Command-Line Options
+**Output**:
+- `meeting.txt` - Transcript with generic labels (SPEAKER_00, SPEAKER_01)
+- `meeting_speakers.txt` - With AI-identified names (Ian, Candidate)
+- `meeting.json` - JSON format
+- `meeting.srt` - Subtitles
+- `meeting_SUMMARY.txt` - Processing report
 
--   `--input`: (Required) The path to the audio file you want to transcribe.
--   `--output-dir`: The directory where the output files will be saved. Defaults to `outputs`.
--   `--api-key`: Your OpenAI API key. If not provided, it will be read from the `OPENAI_API_KEY` environment variable.
--   `--hf-token`: Your Hugging Face API token. If not provided, it will be read from the `HUGGING_FACE_TOKEN` environment variable.
--   `--model`: The Whisper model to use for transcription. Defaults to `whisper-1`.
--   `--formats`: The output formats to export. You can choose multiple formats. Defaults to `txt`, `json`, and `srt`.
--   `--language`: The language of the audio. If not provided, Whisper will automatically detect the language.
--   `--temperature`: The sampling temperature for the Whisper model. Defaults to `0.0`.
+### Batch Processing
 
-## Output Formats
+```powershell
+# Process all M4A files in directory (3 in parallel)
+python -m src.meeting_transcription_tool.cli transcribe `
+    --input "F:\Meetings\" `
+    --file-filter "*.m4a" `
+    --parallel 3
+```
 
-The tool can export the transcript in the following formats:
+**Output**: All files transcribed + **ONE** consolidated summary: `batch_summary_YYYYMMDD_HHMMSS.txt`
 
--   **TXT**: A plain text file with timestamps and speaker labels.
--   **JSON**: A structured JSON file with the transcript and metadata.
--   **SRT**: A SubRip subtitle file.
--   **DOCX**: A Microsoft Word document.
+### Without AI Speaker Identification
+
+```powershell
+python -m src.meeting_transcription_tool.cli transcribe `
+    --input "meeting.m4a" `
+    --no-identify-speakers
+```
+
+---
+
+## Modular Pipeline (For Testing)
+
+Break the pipeline into stages for faster development:
+
+```powershell
+# Stage 1: Transcribe & Diarize (run once, ~8-10 min)
+python -m src.meeting_transcription_tool.cli_stages stage1 `
+    --input "meeting.m4a" `
+    --output-dir "./output"
+
+# Stage 2: AI Speaker ID (test quickly, ~2-5 sec)
+python -m src.meeting_transcription_tool.cli_stages stage2 `
+    --input "./output/meeting_stage1_transcript.json" `
+    --output-dir "./output" `
+    --speaker-context "1-on-1 interview"
+
+# Stage 3: Create Files (instant)
+python -m src.meeting_transcription_tool.cli_stages stage3 `
+    --transcript "./output/meeting_stage1_transcript.json" `
+    --mappings "./output/meeting_stage2_speaker_mappings.json" `
+    --output-dir "./output"
+```
+
+**See PIPELINE_TESTING.md for detailed guide**
+
+---
+
+## CLI Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--input` `-i` | Audio file or directory | Required |
+| `--output-dir` `-o` | Output directory | Same as input |
+| `--identify-speakers` | AI speaker identification | **Enabled** |
+| `--no-identify-speakers` | Disable AI speaker ID | - |
+| `--speaker-context` | Meeting context | Auto-extract |
+| `--ai-model` | AI model (gpt-4o/gemini-2.0-flash) | gpt-4o |
+| `--file-filter` | Batch file pattern | *.m4a |
+| `--parallel` `-p` | Parallel workers | 3 |
+| `--formats` | Output formats | txt,json,srt |
+| `--language` | Audio language | Auto |
+
+---
+
+## Output Files
+
+### With AI Speaker ID (Default)
+- `filename.txt` - Generic labels (SPEAKER_00, SPEAKER_01)
+- `filename_speakers.txt` - AI names (Ian, Candidate)
+- `filename.json`, `filename.srt` - Other formats
+- `filename_SUMMARY.txt` - Individual report
+
+### Batch Mode
+- Individual files for each audio file
+- **ONE** consolidated: `batch_summary_YYYYMMDD_HHMMSS.txt`
+
+---
+
+## Processing Time & Cost
+
+### Time (30-minute audio)
+- Diarization: ~5-6 minutes
+- Transcription: ~3-4 minutes
+- AI Speaker ID: ~2-5 seconds
+- **Total**: ~8-10 minutes
+
+### Cost (30-minute audio)
+- Whisper: $0.18
+- Speaker ID (GPT-4o): $0.01-0.02
+- Speaker ID (Gemini): $0.005-0.01
+- **Total**: ~$0.19-0.20
+
+---
+
+## Examples
+
+### Interview
+```powershell
+python -m src.meeting_transcription_tool.cli transcribe `
+    --input "Ian 1on1 interview.m4a"
+# Auto-detects: "1-on-1 meeting with Ian"
+# Result: Ian → Ian, other speaker → Candidate
+```
+
+### Team Meeting
+```powershell
+python -m src.meeting_transcription_tool.cli transcribe `
+    --input "team-standup.m4a" `
+    --speaker-context "Weekly standup, Sarah is manager"
+```
+
+### Compare AI Models
+```powershell
+# Test GPT-4o vs Gemini on same file
+python -m src.meeting_transcription_tool.cli_stages stage2 `
+    --input "output/meeting_stage1_transcript.json" `
+    --ai-model gpt-4o
+
+python -m src.meeting_transcription_tool.cli_stages stage2 `
+    --input "output/meeting_stage1_transcript.json" `
+    --ai-model gemini-2.0-flash
+```
+
+---
+
+## Documentation
+
+- **PIPELINE_TESTING.md** - Modular pipeline guide
+- **SETUP_GUIDE.md** - Detailed setup instructions
+- **HUGGINGFACE_SETUP.md** - HuggingFace model setup
+- **INSTALL_FFMPEG.md** - FFmpeg installation
+
+---
+
+## Project Structure
+
+```
+src/meeting_transcription_tool/
+├── cli.py                 # Main CLI (full pipeline)
+├── cli_stages.py          # Modular stages CLI
+├── pipeline_stages.py     # Stage functions
+├── audio_processor.py     # Audio validation
+├── transcriber.py         # Whisper transcription
+├── diarization.py         # Speaker diarization
+├── speaker_identifier.py  # AI speaker identification
+├── context_extractor.py   # Smart context from filenames
+├── exporter.py            # Multiple format export
+└── summary_report.py      # Metrics & reporting
+
+tests/
+├── test_*.py              # Unit tests
+└── conftest.py            # Test fixtures
+```
+
+---
+
+## Troubleshooting
+
+### "FFmpeg not found"
+Install FFmpeg (required for M4A):
+```powershell
+choco install ffmpeg
+```
+
+### "Gated model" error
+Accept Hugging Face agreements:
+1. https://huggingface.co/pyannote/speaker-diarization-3.1
+2. https://huggingface.co/pyannote/segmentation-3.0
+
+### Speaker ID not working
+Check `.env` has `OPENAI_API_KEY` set correctly.
+
+---
+
+## Development
+
+### Run Tests
+```powershell
+pytest
+pytest --cov=src/meeting_transcription_tool
+```
+
+### Test Individual Stages
+See PIPELINE_TESTING.md for modular testing workflow.
+
+---
+
+## License
+
+[Your License]
+
+---
+
+## Version
+
+Current: 1.0.0
+- ✅ Transcription with Whisper
+- ✅ Speaker diarization
+- ✅ AI speaker identification (default)
+- ✅ Clean text filtering
+- ✅ Batch processing with parallel execution
+- ✅ Modular pipeline for testing
+- ✅ Consolidated batch summaries

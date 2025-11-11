@@ -1,0 +1,333 @@
+"""
+Modular pipeline stages for meeting transcription.
+
+Breaks down the full pipeline into discrete, testable stages with intermediate outputs.
+"""
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+from typing import List, Dict, Optional
+from dataclasses import dataclass, asdict
+
+
+@dataclass
+class IntermediateTranscript:
+    """Intermediate transcript data structure."""
+    audio_file: str
+    segments: List[Dict]  # List of {start_ms, end_ms, speaker, text}
+    metadata: Dict
+    
+    def save(self, output_path: str) -> None:
+        """Save intermediate transcript to JSON file."""
+        data = {
+            "audio_file": self.audio_file,
+            "segments": self.segments,
+            "metadata": self.metadata
+        }
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    
+    @staticmethod
+    def load(input_path: str) -> 'IntermediateTranscript':
+        """Load intermediate transcript from JSON file."""
+        with open(input_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return IntermediateTranscript(
+            audio_file=data["audio_file"],
+            segments=data["segments"],
+            metadata=data["metadata"]
+        )
+
+
+def stage1_transcribe_and_diarize(
+    audio_path: str,
+    output_dir: str,
+    hf_token: Optional[str] = None,
+    whisper_model: str = "whisper-1",
+    api_key: Optional[str] = None,
+    language: Optional[str] = None,
+    temperature: float = 0.0,
+) -> str:
+    """
+    Stage 1: Transcribe audio and perform speaker diarization.
+    
+    Creates: <basename>_stage1_transcript.json
+    
+    Returns: Path to intermediate file
+    """
+    import asyncio
+    from .transcriber import run_transcription_pipeline
+    
+    base_name = Path(audio_path).stem
+    output_file = os.path.join(output_dir, f"{base_name}_stage1_transcript.json")
+    
+    print(f"[Stage 1] Transcribing and diarizing: {audio_path}")
+    
+    # Run transcription pipeline
+    result = asyncio.run(run_transcription_pipeline(
+        audio_path=audio_path,
+        hf_token=hf_token,
+        model=whisper_model,
+        api_key=api_key,
+        language=language,
+        temperature=temperature,
+    ))
+    
+    # Convert to intermediate format
+    segments = [
+        {
+            "start_ms": seg.start_ms,
+            "end_ms": seg.end_ms,
+            "speaker": seg.speaker,
+            "text": seg.text
+        }
+        for seg in result.segments
+    ]
+    
+    metadata = {
+        "audio_file": os.path.abspath(audio_path),
+        "model": whisper_model,
+        "speakers_detected": len(set(seg.speaker for seg in result.segments)),
+        "total_segments": len(result.segments),
+    }
+    
+    # Save intermediate file
+    intermediate = IntermediateTranscript(
+        audio_file=audio_path,
+        segments=segments,
+        metadata=metadata
+    )
+    intermediate.save(output_file)
+    
+    print(f"[Stage 1] ✓ Saved: {output_file}")
+    print(f"[Stage 1] Speakers: {metadata['speakers_detected']}, Segments: {metadata['total_segments']}")
+    
+    return output_file
+
+
+def stage2_identify_speakers(
+    intermediate_file: str,
+    output_dir: str,
+    speaker_context: Optional[str] = None,
+    ai_model: str = "gpt-4o",
+    api_key: Optional[str] = None,
+) -> str:
+    """
+    Stage 2: Use AI to identify speakers from intermediate transcript.
+    
+    Input: <basename>_stage1_transcript.json
+    Creates: <basename>_stage2_speaker_mappings.json
+    
+    Returns: Path to speaker mappings file
+    """
+    from .speaker_identifier import identify_speakers
+    from .context_extractor import extract_full_context
+    
+    # Load intermediate transcript
+    intermediate = IntermediateTranscript.load(intermediate_file)
+    base_name = Path(intermediate.audio_file).stem
+    output_file = os.path.join(output_dir, f"{base_name}_stage2_speaker_mappings.json")
+    
+    print(f"[Stage 2] Identifying speakers with AI ({ai_model})...")
+    
+    # Build transcript text
+    transcript_text = "\n\n".join([
+        f"[{seg['speaker']}]\n{seg['text']}" for seg in intermediate.segments
+    ])
+    
+    # Extract context if not provided
+    if not speaker_context:
+        speaker_context = extract_full_context(intermediate.audio_file)
+        print(f"[Stage 2] Extracted context: {speaker_context}")
+    
+    # Identify speakers
+    num_speakers = len(set(seg['speaker'] for seg in intermediate.segments))
+    mappings = identify_speakers(
+        transcript_text=transcript_text,
+        num_speakers=num_speakers,
+        participant_names=None,
+        participant_context=speaker_context,
+        api_key=api_key,
+        model=ai_model,
+    )
+    
+    # Save mappings
+    mapping_data = {
+        "source_file": intermediate_file,
+        "audio_file": intermediate.audio_file,
+        "ai_model": ai_model,
+        "speaker_context": speaker_context,
+        "mappings": mappings
+    }
+    
+    os.makedirs(output_dir, exist_ok=True)
+    with open(output_file, 'w', encoding='utf-8') as f:
+        json.dump(mapping_data, f, ensure_ascii=False, indent=2)
+    
+    print(f"[Stage 2] ✓ Saved: {output_file}")
+    print(f"[Stage 2] Speaker mappings:")
+    for generic, actual in mappings.items():
+        print(f"  {generic} -> {actual}")
+    
+    return output_file
+
+
+def stage3_apply_speaker_names(
+    intermediate_file: str,
+    speaker_mapping_file: Optional[str],
+    output_dir: str,
+    formats: List[str] = None,
+) -> List[str]:
+    """
+    Stage 3: Apply speaker name mappings and create final output files.
+    
+    Input: 
+      - <basename>_stage1_transcript.json
+      - <basename>_stage2_speaker_mappings.json (optional)
+    Creates: 
+      - <basename>.txt (generic labels)
+      - <basename>_speakers.txt (AI-identified names, if mappings provided)
+      - <basename>.json, .srt, etc. (based on formats)
+    
+    Returns: List of created file paths
+    """
+    from .exporter import (
+        TranscriptSegment, export_txt, export_txt_with_speakers,
+        export_json, export_srt, export_docx
+    )
+    
+    if formats is None:
+        formats = ["txt", "json", "srt"]
+    
+    # Load intermediate transcript
+    intermediate = IntermediateTranscript.load(intermediate_file)
+    base_name = Path(intermediate.audio_file).stem
+    
+    # Load speaker mappings (if provided)
+    mappings = {}
+    if speaker_mapping_file and os.path.exists(speaker_mapping_file):
+        with open(speaker_mapping_file, 'r', encoding='utf-8') as f:
+            mapping_data = json.load(f)
+        mappings = mapping_data.get('mappings', {})
+    
+    print(f"[Stage 3] Applying speaker names and creating output files...")
+    
+    # Convert to TranscriptSegment objects (generic labels)
+    segments_generic = [
+        TranscriptSegment(
+            start_ms=seg['start_ms'],
+            end_ms=seg['end_ms'],
+            text=seg['text'],
+            speaker=seg['speaker']
+        )
+        for seg in intermediate.segments
+    ]
+    
+    # Convert to TranscriptSegment objects (with AI names)
+    segments_named = [
+        TranscriptSegment(
+            start_ms=seg['start_ms'],
+            end_ms=seg['end_ms'],
+            text=seg['text'],
+            speaker=mappings.get(seg['speaker'], seg['speaker'])
+        )
+        for seg in intermediate.segments
+    ]
+    
+    written_files = []
+    
+    # Export with generic labels
+    if "txt" in formats:
+        file_path = export_txt(segments_generic, output_dir, base_name)
+        written_files.append(file_path)
+        print(f"[Stage 3] ✓ Created: {os.path.basename(file_path)}")
+    
+    # Export with AI-identified speaker names
+    if "txt" in formats and mappings:
+        file_path = export_txt_with_speakers(segments_named, output_dir, base_name)
+        written_files.append(file_path)
+        print(f"[Stage 3] ✓ Created: {os.path.basename(file_path)}")
+    
+    # Other formats (use named speakers)
+    metadata = {
+        "source_file": intermediate.audio_file,
+        "model": intermediate.metadata.get("model", "whisper-1"),
+        "speaker_identification": True,
+        "speaker_mappings": mappings
+    }
+    
+    if "json" in formats:
+        file_path = export_json(segments_named, output_dir, base_name, metadata=metadata)
+        written_files.append(file_path)
+        print(f"[Stage 3] ✓ Created: {os.path.basename(file_path)}")
+    
+    if "srt" in formats:
+        file_path = export_srt(segments_named, output_dir, base_name)
+        written_files.append(file_path)
+        print(f"[Stage 3] ✓ Created: {os.path.basename(file_path)}")
+    
+    if "docx" in formats:
+        try:
+            file_path = export_docx(segments_named, output_dir, base_name)
+            written_files.append(file_path)
+            print(f"[Stage 3] ✓ Created: {os.path.basename(file_path)}")
+        except Exception as e:
+            print(f"[Stage 3] ⚠ DOCX export skipped: {e}")
+    
+    print(f"[Stage 3] ✓ Complete! Created {len(written_files)} files")
+    
+    return written_files
+
+
+def run_full_pipeline(
+    audio_path: str,
+    output_dir: str,
+    identify_speakers: bool = True,
+    **kwargs
+) -> Dict[str, str]:
+    """
+    Run the complete pipeline with all stages.
+    
+    Returns: Dictionary with paths to all intermediate and final files
+    """
+    results = {}
+    
+    # Stage 1: Transcribe and Diarize
+    stage1_file = stage1_transcribe_and_diarize(
+        audio_path=audio_path,
+        output_dir=output_dir,
+        hf_token=kwargs.get('hf_token'),
+        whisper_model=kwargs.get('model', 'whisper-1'),
+        api_key=kwargs.get('api_key'),
+        language=kwargs.get('language'),
+        temperature=kwargs.get('temperature', 0.0),
+    )
+    results['stage1_transcript'] = stage1_file
+    
+    # Stage 2: Identify Speakers (if enabled)
+    if identify_speakers:
+        stage2_file = stage2_identify_speakers(
+            intermediate_file=stage1_file,
+            output_dir=output_dir,
+            speaker_context=kwargs.get('speaker_context'),
+            ai_model=kwargs.get('ai_model', 'gpt-4o'),
+            api_key=kwargs.get('api_key'),
+        )
+        results['stage2_mappings'] = stage2_file
+    else:
+        stage2_file = None
+    
+    # Stage 3: Create final outputs
+    final_files = stage3_apply_speaker_names(
+        intermediate_file=stage1_file,
+        speaker_mapping_file=stage2_file if stage2_file else None,
+        output_dir=output_dir,
+        formats=kwargs.get('formats', ['txt', 'json', 'srt']),
+    )
+    results['final_files'] = final_files
+    
+    return results
+

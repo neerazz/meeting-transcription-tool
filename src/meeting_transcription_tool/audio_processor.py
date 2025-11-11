@@ -103,12 +103,12 @@ def validate_audio_file(
     if size > max_bytes:
         return False, f"File is too large: {bytes_to_readable(size)} > {bytes_to_readable(max_bytes)}"
 
+    # Try to get duration, but don't fail if we can't
+    # The transcription services will handle the audio file directly
     duration = get_audio_duration(path)
     if duration > 0 and duration > max_duration_s:
         return False, f"File is too long: {duration:.2f}s > {max_duration_s}s"
-    elif duration <= 0 and HAS_MUTAGEN:
-        # If mutagen is installed, we expect to be able to read the duration
-        return False, f"Could not determine audio duration."
+    # Note: If we can't determine duration, we'll let the transcription service handle it
 
     return True, ""
 
