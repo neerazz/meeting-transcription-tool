@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import multiprocessing
+import threading
 
 import click
 from rich.console import Console
@@ -31,6 +32,9 @@ load_dotenv()
 
 
 console = Console()
+logger = logging.getLogger("meeting_transcription_tool.cli")
+LOG_FORMAT = "%(asctime)s [%(threadName)s] %(levelname)s %(name)s:%(funcName)s - %(message)s"
+LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S.%f"
 
 
 def _get_optimal_parallel_workers() -> int:
@@ -61,12 +65,27 @@ def _default_base_name(input_path: str) -> str:
 @click.option("--quiet", "-q", is_flag=True, help="Suppress all output except for errors.")
 def cli(verbose: bool, quiet: bool) -> None:
 	if verbose:
-		logging.basicConfig(level=logging.DEBUG)
+		logging.basicConfig(
+			level=logging.DEBUG,
+			format=LOG_FORMAT,
+			datefmt=LOG_DATE_FORMAT,
+			force=True,
+		)
 	elif quiet:
-		logging.basicConfig(level=logging.CRITICAL)
+		logging.basicConfig(
+			level=logging.CRITICAL,
+			format=LOG_FORMAT,
+			datefmt=LOG_DATE_FORMAT,
+			force=True,
+		)
 		console.quiet = True
 	else:
-		logging.basicConfig(level=logging.INFO)
+		logging.basicConfig(
+			level=logging.INFO,
+			format=LOG_FORMAT,
+			datefmt=LOG_DATE_FORMAT,
+			force=True,
+		)
 
 
 @cli.command("transcribe", help="Transcribe audio file(s) with Whisper and export outputs.")
@@ -105,7 +124,12 @@ def transcribe_cmd(
 	# Auto-detect optimal parallel workers if not specified
 	if parallel is None:
 		parallel = _get_optimal_parallel_workers()
-		console.print(f"[dim]Auto-detected optimal parallel workers: {parallel} (CPU cores: {multiprocessing.cpu_count()})[/dim]")
+		cpu_count = multiprocessing.cpu_count()
+		message = f"Auto-detected optimal parallel workers: {parallel} (CPU cores: {cpu_count})"
+		logger.info(message)
+		console.print(f"[dim]{message}[/dim]")
+	else:
+		logger.info("Using user-specified parallel workers: %s", parallel)
 	
 	# Check if input is directory or file
 	input_path_obj = Path(input_path)
@@ -172,6 +196,14 @@ def _batch_transcribe(
 		return
 	
 	cpu_count = multiprocessing.cpu_count()
+	max_workers = max(1, min(max_workers, len(audio_files)))
+	logger.info(
+		"Discovered %s audio files in '%s' (max_workers=%s, cpu_cores=%s)",
+		len(audio_files),
+		input_dir,
+		max_workers,
+		cpu_count,
+	)
 	console.print(f"[bold cyan]Batch Processing Mode (Parallel)[/bold cyan]")
 	console.print(f"Found {len(audio_files)} file(s) matching '{file_filter}'")
 	console.print(f"Processing {max_workers} files in parallel (CPU cores: {cpu_count})")
@@ -185,9 +217,9 @@ def _batch_transcribe(
 	
 	def process_file(audio_file: Path) -> tuple[str, bool, Optional[str], Optional[ProcessingMetrics]]:
 		"""Process a single file and return results."""
-		import threading
 		thread_id = threading.current_thread().name
-		console.print(f"[cyan][{thread_id}] Starting: {audio_file.name}[/cyan]")
+		logger.info("Dispatching file for processing: %s", audio_file.name)
+		console.print(f"[cyan]{audio_file.name}[/cyan] -> queued on [dim]{thread_id}[/dim]")
 		try:
 			metrics = _process_single_file(
 				input_path=str(audio_file),
@@ -204,13 +236,19 @@ def _batch_transcribe(
 				overwrite=overwrite,
 				return_metrics=True,
 			)
+			logger.info(
+				"Completed file %s in %.2fs (thread=%s)",
+				audio_file.name,
+				metrics.total_time,
+				thread_id,
+			)
 			return (audio_file.name, True, None, metrics)
 		except Exception as e:
-			console.print(f"[red][{thread_id}] Failed: {audio_file.name} - {e}[/red]")
+			logger.exception("Failed processing file %s on thread %s", audio_file.name, thread_id)
 			return (audio_file.name, False, str(e), None)
 	
 	# Process files in parallel
-	with ThreadPoolExecutor(max_workers=max_workers) as executor:
+	with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="TranscribeWorker") as executor:
 		# Submit all tasks
 		future_to_file = {executor.submit(process_file, audio_file): audio_file for audio_file in audio_files}
 		
@@ -284,6 +322,7 @@ def _process_single_file(
 	ok, reason = validate_audio_file(input_path)
 	if not ok:
 		console.print(f"[red]Invalid input:[/red] {reason}")
+		logger.error("Validation failed for %s: %s", input_path, reason)
 		raise click.ClickException(reason)
 
 	# If no output directory specified, use the same directory as the input file
@@ -292,6 +331,7 @@ def _process_single_file(
 		console.print(f"[dim]Output directory not specified, using input file directory[/dim]")
 
 	file_size = os.path.getsize(input_path)
+	logger.info("Starting processing for %s (size=%s bytes, output_dir=%s)", input_path, file_size, output_dir)
 	console.print(f"[bold]Input:[/bold] {input_path} ({bytes_to_readable(file_size)})")
 	console.print(f"[bold]Output:[/bold] {output_dir}")
 	
@@ -344,6 +384,7 @@ def _process_single_file(
 		except Exception as e:
 			console.print(f"[red]Pipeline failed:[/red] {e}")
 			metrics.errors.append(f"Pipeline failed: {str(e)}")
+			logger.exception("Pipeline failure for %s", input_path)
 			raise click.ClickException(str(e))
 
 	# AI-powered speaker identification (optional)
@@ -387,10 +428,12 @@ def _process_single_file(
 			else:
 				console.print("[yellow]Could not identify speakers, using generic labels[/yellow]")
 				metrics.warnings.append("Speaker identification returned no mappings")
+				logger.warning("Speaker identification returned no mappings for %s", input_path)
 		except Exception as e:
 			console.print(f"[yellow]Speaker identification failed: {e}[/yellow]")
 			console.print("[yellow]Continuing with generic speaker labels[/yellow]")
 			metrics.warnings.append(f"Speaker identification failed: {str(e)}")
+			logger.exception("Speaker identification failed for %s", input_path)
 
 	base_name = _default_base_name(input_path)
 	written = []
@@ -417,9 +460,15 @@ def _process_single_file(
 		except Exception as e:
 			console.print(f"[yellow]DOCX export skipped:[/yellow] {e}")
 			metrics.warnings.append(f"DOCX export failed: {str(e)}")
+			logger.warning("DOCX export failed for %s: %s", input_path, e)
 	export_end = time.time()
 	
 	metrics.export_time = export_end - export_start
+	logger.info(
+		"Finished exports for %s (written=%s)",
+		input_path,
+		", ".join(os.path.basename(f) for f in written),
+	)
 	metrics.output_files = [os.path.basename(f) for f in written]
 	metrics.output_directory = output_dir
 	
@@ -441,6 +490,12 @@ def _process_single_file(
 	
 	metrics.total_cost_usd = metrics.whisper_cost_usd + metrics.speaker_id_cost_usd
 	metrics.total_time = time.time() - metrics.start_time
+	logger.info(
+		"Completed processing for %s (total_time=%.2fs, total_cost=$%.4f)",
+		input_path,
+		metrics.total_time,
+		metrics.total_cost_usd,
+	)
 
 	console.print("[green]Transcription complete![/green]")
 	for path in written:
