@@ -42,6 +42,7 @@ class ProcessingMetrics:
     speaker_id_tokens_input: int = 0
     speaker_id_tokens_output: int = 0
     speaker_id_api_calls: int = 0
+    speaker_id_request_preview: str = ""
     
     # Models used
     transcription_model: str = ""
@@ -77,6 +78,13 @@ def calculate_gemini_cost(input_tokens: int, output_tokens: int) -> float:
     """Calculate Gemini 2.0 Flash cost ($0.075/1M input, $0.30/1M output)."""
     input_cost = (input_tokens / 1_000_000) * 0.075
     output_cost = (output_tokens / 1_000_000) * 0.30
+    return input_cost + output_cost
+
+
+def calculate_gpt5mini_cost(input_tokens: int, output_tokens: int) -> float:
+    """Calculate GPT-5 Mini cost ($1.00/1M input, $4.00/1M output)."""
+    input_cost = (input_tokens / 1_000_000) * 1.00
+    output_cost = (output_tokens / 1_000_000) * 4.00
     return input_cost + output_cost
 
 
@@ -149,6 +157,8 @@ def generate_summary_report(metrics: ProcessingMetrics) -> str:
                 lines.append(f"    • {generic} -> {actual}")
         else:
             lines.append(f"    (No mappings generated)")
+        if metrics.speaker_id_request_preview:
+            lines.append(f"  Prompt Preview: {metrics.speaker_id_request_preview}")
     else:
         lines.append(f"  Status:         Disabled")
     lines.append("")

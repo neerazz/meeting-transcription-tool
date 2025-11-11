@@ -1,15 +1,15 @@
 """
 AI-powered speaker identification module.
 
-Uses GPT-4o with reasoning or Gemini 2.0 Flash to analyze transcripts 
-and identify speakers by their actual names or descriptive roles.
+Uses OpenAI GPT-5 Mini (default), GPT-4o, or Gemini 2.0 Flash to analyze
+transcripts and identify speakers by their actual names or descriptive roles.
 """
 from __future__ import annotations
 
 import os
 from typing import List, Dict, Optional, Literal
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from openai import OpenAI
 
@@ -18,9 +18,31 @@ from openai import OpenAI
 class SpeakerMapping:
     """Mapping from generic speaker label to actual name."""
     generic_label: str  # e.g., "SPEAKER_00"
-    actual_name: str    # e.g., "Ian" or "Interviewer"
+    actual_name: str  # e.g., "Ian" or "Interviewer"
     confidence: str     # e.g., "high", "medium", "low"
     reasoning: str      # Why the AI thinks this is correct
+
+
+@dataclass
+class SpeakerIdentificationResult:
+    """Structured result for AI-based speaker identification."""
+
+    mappings: Dict[str, str] = field(default_factory=dict)
+    model: str = ""
+    provider: str = ""
+    request_metadata: Dict[str, str] = field(default_factory=dict)
+    response_metadata: Dict[str, str] = field(default_factory=dict)
+    raw_response: Optional[Dict] = None
+
+    def as_dict(self) -> Dict[str, object]:
+        """Return a JSON-serializable representation."""
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "mappings": self.mappings,
+            "request": self.request_metadata,
+            "response": self.response_metadata,
+        }
 
 
 def identify_speakers(
@@ -30,8 +52,8 @@ def identify_speakers(
     participant_context: Optional[str] = None,
     filename: Optional[str] = None,
     api_key: Optional[str] = None,
-    model: Literal["gpt-4o", "gemini-2.0-flash"] = "gpt-4o",
-) -> Dict[str, str]:
+    model: Literal["gpt-5-mini", "gpt-4o", "gemini-2.0-flash"] = "gpt-5-mini",
+ ) -> SpeakerIdentificationResult:
     """
     Use AI to identify speakers in a transcript and map generic labels to actual names.
     
@@ -42,16 +64,20 @@ def identify_speakers(
         participant_context: Additional context about the meeting/participants (optional)
         filename: Name of the audio file (optional, often contains participant names)
         api_key: OpenAI API key (optional, will use env var if not provided)
-        model: AI model to use - "gpt-4o" (with reasoning) or "gemini-2.0-flash"
+        model: AI model to use - "gpt-5-mini" (default), "gpt-4o", or "gemini-2.0-flash"
     
     Returns:
-        Dictionary mapping generic labels to actual names/roles, e.g.:
-        {"SPEAKER_00": "Ian", "SPEAKER_01": "Candidate"}
+        SpeakerIdentificationResult containing mappings and metadata.
     """
-    if model == "gpt-4o":
+    if model in {"gpt-5-mini", "gpt-4o"}:
         return _identify_with_openai(
-            transcript_text, num_speakers, participant_names, 
-            participant_context, filename, api_key
+            transcript_text,
+            num_speakers,
+            participant_names,
+            participant_context,
+            filename,
+            api_key,
+            model_name=model,
         )
     elif model == "gemini-2.0-flash":
         return _identify_with_gemini(
@@ -69,8 +95,9 @@ def _identify_with_openai(
     participant_context: Optional[str],
     filename: Optional[str],
     api_key: Optional[str],
-) -> Dict[str, str]:
-    """Identify speakers using GPT-4o with reasoning."""
+    model_name: str,
+ ) -> SpeakerIdentificationResult:
+    """Identify speakers using OpenAI GPT family (GPT-5 Mini/GPT-4o)."""
     client = OpenAI(api_key=api_key or os.getenv("OPENAI_API_KEY"))
     
     # Build optimized prompt
@@ -106,9 +133,17 @@ Guidelines:
 
 Output valid JSON only."""
 
-    # Call GPT-4o with reasoning
+    request_metadata = _build_request_metadata(
+        provider="openai",
+        model=model_name,
+        temperature=0.2,
+        system_instruction=system_instruction,
+        prompt=prompt,
+    )
+
+    # Call OpenAI with reasoning
     response = client.chat.completions.create(
-        model="gpt-4o",  # GPT-4o with reasoning capabilities
+        model=model_name,
         messages=[
             {
                 "role": "system",
@@ -125,7 +160,8 @@ Output valid JSON only."""
     )
     
     # Parse response
-    result = json.loads(response.choices[0].message.content)
+    content = response.choices[0].message.content
+    result = json.loads(content)
     
     # Extract mappings
     mappings = {}
@@ -134,8 +170,22 @@ Output valid JSON only."""
         actual_name = mapping.get("actual_name", "")
         if generic_label and actual_name:
             mappings[generic_label] = actual_name
+
+    response_metadata = _build_response_metadata(
+        provider="openai",
+        model=model_name,
+        response=response,
+        raw_json=result,
+    )
     
-    return mappings
+    return SpeakerIdentificationResult(
+        mappings=mappings,
+        model=model_name,
+        provider="openai",
+        request_metadata=request_metadata,
+        response_metadata=response_metadata,
+        raw_response=result,
+    )
 
 
 def _identify_with_gemini(
@@ -145,7 +195,7 @@ def _identify_with_gemini(
     participant_context: Optional[str],
     filename: Optional[str],
     api_key: Optional[str],
-) -> Dict[str, str]:
+ ) -> SpeakerIdentificationResult:
     """Identify speakers using Gemini 2.0 Flash."""
     try:
         import google.generativeai as genai
@@ -182,6 +232,15 @@ Be consistent and confident. Output valid JSON only."""
     
     # Generate response
     full_prompt = f"{system_instruction}\n\n{prompt}"
+
+    request_metadata = _build_request_metadata(
+        provider="google",
+        model="gemini-2.0-flash-exp",
+        temperature=0.2,
+        system_instruction=system_instruction,
+        prompt=prompt,
+    )
+
     response = model.generate_content(
         full_prompt,
         generation_config={
@@ -201,7 +260,25 @@ Be consistent and confident. Output valid JSON only."""
         if generic_label and actual_name:
             mappings[generic_label] = actual_name
     
-    return mappings
+    response_metadata = {
+        "provider": "google",
+        "model": "gemini-2.0-flash-exp",
+    }
+    if hasattr(response, "usage_metadata"):
+        usage = response.usage_metadata
+        response_metadata.update({
+            "prompt_token_count": getattr(usage, "prompt_token_count", None),
+            "candidates_token_count": getattr(usage, "candidates_token_count", None),
+        })
+    
+    return SpeakerIdentificationResult(
+        mappings=mappings,
+        model="gemini-2.0-flash",
+        provider="google",
+        request_metadata=request_metadata,
+        response_metadata={k: v for k, v in response_metadata.items() if v is not None},
+        raw_response=result,
+    )
 
 
 def _build_optimized_prompt(
@@ -320,6 +397,77 @@ OUTPUT (JSON):
 Analyze now and provide JSON:"""
     
     return prompt
+
+
+def _build_request_metadata(
+    provider: str,
+    model: str,
+    temperature: float,
+    system_instruction: str,
+    prompt: str,
+    max_preview_chars: int = 280,
+) -> Dict[str, str]:
+    """Create a sanitized preview of the AI request for logging/display."""
+
+    def _preview(text: str) -> str:
+        sanitized = " ".join(text.strip().split())
+        if len(sanitized) > max_preview_chars:
+            return sanitized[:max_preview_chars - 1] + "…"
+        return sanitized
+
+    return {
+        "provider": provider,
+        "model": model,
+        "temperature": f"{temperature:.2f}",
+        "system_instruction_preview": _preview(system_instruction),
+        "user_prompt_preview": _preview(prompt),
+        "prompt_char_count": str(len(prompt)),
+    }
+
+
+def _build_response_metadata(
+    provider: str,
+    model: str,
+    response,
+    raw_json: Dict,
+) -> Dict[str, str]:
+    """Create a sanitized summary of the AI response metadata."""
+    metadata: Dict[str, str] = {
+        "provider": provider,
+        "model": model,
+    }
+
+    response_id = getattr(response, "id", None)
+    if response_id:
+
+        metadata["response_id"] = response_id
+
+    usage = getattr(response, "usage", None)
+    if usage:
+        prompt_tokens = getattr(usage, "prompt_tokens", None) or getattr(usage, "input_tokens", None)
+        completion_tokens = getattr(usage, "completion_tokens", None) or getattr(usage, "output_tokens", None)
+        total_tokens = getattr(usage, "total_tokens", None)
+        if prompt_tokens is not None:
+            metadata["prompt_tokens"] = str(prompt_tokens)
+        if completion_tokens is not None:
+            metadata["completion_tokens"] = str(completion_tokens)
+        if total_tokens is not None:
+            metadata["total_tokens"] = str(total_tokens)
+
+    if "analysis" in raw_json:
+        metadata["analysis_preview"] = _trim_text(raw_json["analysis"])
+
+    return {k: v for k, v in metadata.items() if v is not None}
+
+
+def _trim_text(value: str, max_chars: int = 200) -> str:
+    """Trim text for previews."""
+    if not isinstance(value, str):
+        return ""
+    text = " ".join(value.strip().split())
+    if len(text) > max_chars:
+        return text[:max_chars - 1] + "…"
+    return text
 
 
 def apply_speaker_mappings(

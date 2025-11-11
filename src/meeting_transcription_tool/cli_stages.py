@@ -62,7 +62,7 @@ def run_stage1(input_path, output_dir, hf_token, model, api_key, language, tempe
 @click.option("-i", "--input", "input_path", required=True, type=click.Path(exists=True), help="Stage 1 intermediate file (_stage1_transcript.json)")
 @click.option("-o", "--output-dir", required=True, type=click.Path(file_okay=False), help="Output directory")
 @click.option("--speaker-context", default=None, help="Meeting context (e.g., '1-on-1 interview')")
-@click.option("--ai-model", type=click.Choice(["gpt-4o", "gemini-2.0-flash"]), default="gpt-4o", help="AI model")
+@click.option("--ai-model", type=click.Choice(["gpt-5-mini", "gpt-4o", "gemini-2.0-flash"]), default="gpt-5-mini", help="AI model")
 @click.option("--api-key", default=None, help="OpenAI/Google API key")
 def run_stage2(input_path, output_dir, speaker_context, ai_model, api_key):
     """Run Stage 2: AI Speaker Identification"""

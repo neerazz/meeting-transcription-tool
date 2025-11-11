@@ -120,6 +120,8 @@ python -m src.meeting_transcription_tool.cli_stages stage3 `
     --output-dir "./output"
 ```
 
+ℹ️ Stage 2 now prints sanitized AI request/response metadata, and the `_stage2_speaker_mappings.json` file captures both for auditing.
+
 **See PIPELINE_TESTING.md for detailed guide**
 
 ---
@@ -139,7 +141,7 @@ python -m src.meeting_transcription_tool.cli_stages stage3 `
 | `--identify-speakers` | AI speaker identification | **Enabled** |
 | `--no-identify-speakers` | Disable AI speaker ID | - |
 | `--speaker-context` | Meeting context | Auto-extract |
-| `--ai-model` | AI model (gpt-4o/gemini-2.0-flash) | gpt-4o |
+| `--ai-model` | AI model (gpt-5-mini/gpt-4o/gemini-2.0-flash) | gpt-5-mini |
 | `--file-filter` | Batch file pattern | *.m4a |
 | `--parallel` `-p` | Parallel workers | Auto (CPU cores − 1, max 8) |
 | `--overwrite` | Overwrite existing output files | Enabled |
@@ -279,7 +281,7 @@ python -m src.meeting_transcription_tool.cli transcribe `
 # Test GPT-4o vs Gemini on same file
 python -m src.meeting_transcription_tool.cli_stages stage2 `
     --input "output/meeting_stage1_transcript.json" `
-    --ai-model gpt-4o
+    --ai-model gpt-5-mini
 
 python -m src.meeting_transcription_tool.cli_stages stage2 `
     --input "output/meeting_stage1_transcript.json" `

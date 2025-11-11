@@ -112,7 +112,7 @@ def stage2_identify_speakers(
     intermediate_file: str,
     output_dir: str,
     speaker_context: Optional[str] = None,
-    ai_model: str = "gpt-4o",
+    ai_model: str = "gpt-5-mini",
     api_key: Optional[str] = None,
 ) -> str:
     """
@@ -145,7 +145,7 @@ def stage2_identify_speakers(
     
     # Identify speakers - pass filename so AI can extract names from it
     num_speakers = len(set(seg['speaker'] for seg in intermediate.segments))
-    mappings = identify_speakers(
+    result = identify_speakers(
         transcript_text=transcript_text,
         num_speakers=num_speakers,
         participant_names=None,
@@ -154,6 +154,14 @@ def stage2_identify_speakers(
         api_key=api_key,
         model=ai_model,
     )
+    mappings = result.mappings
+    
+    if result.request_metadata:
+        print("[Stage 2] AI speaker-label request metadata:")
+        print(json.dumps(result.request_metadata, indent=2))
+    if result.response_metadata:
+        print("[Stage 2] AI speaker-label response metadata:")
+        print(json.dumps(result.response_metadata, indent=2))
     
     # Save mappings
     mapping_data = {
@@ -161,7 +169,9 @@ def stage2_identify_speakers(
         "audio_file": intermediate.audio_file,
         "ai_model": ai_model,
         "speaker_context": speaker_context,
-        "mappings": mappings
+        "mappings": mappings,
+        "ai_request_metadata": result.request_metadata,
+        "ai_response_metadata": result.response_metadata,
     }
     
     os.makedirs(output_dir, exist_ok=True)
@@ -314,7 +324,7 @@ def run_full_pipeline(
             intermediate_file=stage1_file,
             output_dir=output_dir,
             speaker_context=kwargs.get('speaker_context'),
-            ai_model=kwargs.get('ai_model', 'gpt-4o'),
+            ai_model=kwargs.get('ai_model', 'gpt-5-mini'),
             api_key=kwargs.get('api_key'),
         )
         results['stage2_mappings'] = stage2_file

@@ -23,7 +23,7 @@ from .exporter import export_txt, export_txt_with_speakers, export_json, export_
 from .summary_report import (
     ProcessingMetrics, generate_summary_report, save_summary_report,
     save_batch_summary_report, calculate_whisper_cost, calculate_gpt4o_cost, 
-    calculate_gemini_cost, estimate_tokens
+    calculate_gemini_cost, calculate_gpt5mini_cost, estimate_tokens
 )
 from .context_extractor import extract_full_context, format_context_for_display
 
@@ -99,7 +99,7 @@ def cli(verbose: bool, quiet: bool) -> None:
 @click.option("--temperature", default=0.0, show_default=True, type=float, help="Sampling temperature for Whisper.")
 @click.option("--identify-speakers/--no-identify-speakers", default=True, help="Use AI to identify speakers by their actual names. Enabled by default.")
 @click.option("--speaker-context", default=None, help="Context about the meeting/participants (e.g., '1-on-1 interview'). If not provided, will extract from filename.")
-@click.option("--ai-model", type=click.Choice(["gpt-4o", "gemini-2.0-flash"]), default="gpt-4o", help="AI model for speaker identification.")
+@click.option("--ai-model", type=click.Choice(["gpt-5-mini", "gpt-4o", "gemini-2.0-flash"]), default="gpt-5-mini", help="AI model for speaker identification.")
 @click.option("--file-filter", default="*.m4a", help="File pattern for batch processing (e.g., '*.m4a', '*.mp3'). Only used when input is a directory.")
 @click.option("--overwrite", is_flag=True, default=True, help="Overwrite existing output files.")
 @click.option("--parallel", "-p", default=None, type=int, help="Number of files to process in parallel for batch mode. Default: Auto-detected based on CPU cores (CPU count - 1)")
@@ -403,7 +403,7 @@ def _process_single_file(
 			metrics.speaker_id_tokens_input = estimate_tokens(transcript_text)
 			
 			# Identify speakers - pass filename so AI can extract names from it
-			mappings = identify_speakers(
+			result = identify_speakers(
 				transcript_text=transcript_text,
 				num_speakers=len(set(seg.speaker for seg in result.segments)),
 				participant_names=None,  # Let AI figure out names from context and filename
@@ -412,10 +412,20 @@ def _process_single_file(
 				api_key=api_key,
 				model=ai_model,
 			)
+			mappings = result.mappings
 			
 			speaker_id_end = time.time()
 			metrics.speaker_identification_time = speaker_id_end - speaker_id_start
 			metrics.speaker_id_api_calls = 1
+			if result.request_metadata:
+				metrics.speaker_id_request_preview = result.request_metadata.get("user_prompt_preview", "")
+			
+			if result.request_metadata:
+				console.print("\n[dim]AI speaker-label request metadata:[/dim]")
+				console.print(json.dumps(result.request_metadata, indent=2))
+			if result.response_metadata:
+				console.print("[dim]AI speaker-label response metadata:[/dim]")
+				console.print(json.dumps(result.response_metadata, indent=2))
 			
 			# Estimate output tokens (typically smaller than input)
 			metrics.speaker_id_tokens_output = 200  # Typical JSON response size
@@ -477,7 +487,12 @@ def _process_single_file(
 	metrics.whisper_cost_usd = calculate_whisper_cost(metrics.whisper_audio_minutes)
 	
 	if metrics.speaker_id_enabled and metrics.speaker_id_api_calls > 0:
-		if ai_model == "gpt-4o":
+		if ai_model == "gpt-5-mini":
+			metrics.speaker_id_cost_usd = calculate_gpt5mini_cost(
+				metrics.speaker_id_tokens_input,
+				metrics.speaker_id_tokens_output
+			)
+		elif ai_model == "gpt-4o":
 			metrics.speaker_id_cost_usd = calculate_gpt4o_cost(
 				metrics.speaker_id_tokens_input,
 				metrics.speaker_id_tokens_output
