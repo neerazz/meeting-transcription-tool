@@ -61,7 +61,7 @@ def _default_base_name(input_path: str) -> str:
 	name = os.path.basename(input_path)
 	return os.path.splitext(name)[0]
 
-
+ 
 @click.group(help="Meeting Transcription Tool CLI")
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging.")
 @click.option("--quiet", "-q", is_flag=True, help="Suppress all output except for errors.")
