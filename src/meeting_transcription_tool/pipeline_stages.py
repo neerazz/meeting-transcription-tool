@@ -50,19 +50,37 @@ def stage1_transcribe_and_diarize(
     api_key: Optional[str] = None,
     language: Optional[str] = None,
     temperature: float = 0.0,
+    use_cache: bool = True,
 ) -> str:
     """
     Stage 1: Transcribe audio and perform speaker diarization.
     
     Creates: <basename>_stage1_transcript.json
     
+    Args:
+        use_cache: If True, check for existing cache file before running
+    
     Returns: Path to intermediate file
     """
     import asyncio
     from .transcriber import run_transcription_pipeline
+    from .cache_manager import is_stage1_cached
     
     base_name = Path(audio_path).stem
     output_file = os.path.join(output_dir, f"{base_name}_stage1_transcript.json")
+    
+    # Check cache first
+    if use_cache:
+        is_cached, cache_path = is_stage1_cached(
+            audio_path=audio_path,
+            output_dir=output_dir,
+            whisper_model=whisper_model,
+            language=language,
+            temperature=temperature,
+        )
+        if is_cached and cache_path:
+            print(f"[Stage 1] [CACHED] Using cached result: {os.path.basename(cache_path)}")
+            return cache_path
     
     print(f"[Stage 1] Transcribing and diarizing: {audio_path}")
     
@@ -100,9 +118,10 @@ def stage1_transcribe_and_diarize(
         segments=segments,
         metadata=metadata
     )
+    os.makedirs(output_dir, exist_ok=True)
     intermediate.save(output_file)
     
-    print(f"[Stage 1] ✓ Saved: {output_file}")
+    print(f"[Stage 1] [COMPLETE] Saved: {output_file}")
     print(f"[Stage 1] Speakers: {metadata['speakers_detected']}, Segments: {metadata['total_segments']}")
     
     return output_file
@@ -114,6 +133,7 @@ def stage2_identify_speakers(
     speaker_context: Optional[str] = None,
     ai_model: str = "gpt-5-mini",
     api_key: Optional[str] = None,
+    use_cache: bool = True,
 ) -> str:
     """
     Stage 2: Use AI to identify speakers from intermediate transcript.
@@ -121,15 +141,32 @@ def stage2_identify_speakers(
     Input: <basename>_stage1_transcript.json
     Creates: <basename>_stage2_speaker_mappings.json
     
+    Args:
+        use_cache: If True, check for existing cache file before running
+    
     Returns: Path to speaker mappings file
     """
     from .speaker_identifier import identify_speakers, format_segments_for_prompt
     from .context_extractor import extract_full_context
+    from .cache_manager import is_stage2_cached
     
     # Load intermediate transcript
     intermediate = IntermediateTranscript.load(intermediate_file)
     base_name = Path(intermediate.audio_file).stem
     output_file = os.path.join(output_dir, f"{base_name}_stage2_speaker_mappings.json")
+    
+    # Check cache first
+    if use_cache:
+        is_cached, cache_path = is_stage2_cached(
+            stage1_file=intermediate_file,
+            audio_path=intermediate.audio_file,
+            output_dir=output_dir,
+            ai_model=ai_model,
+            speaker_context=speaker_context,
+        )
+        if is_cached and cache_path:
+            print(f"[Stage 2] [CACHED] Using cached result: {os.path.basename(cache_path)}")
+            return cache_path
     
     print(f"[Stage 2] Identifying speakers with AI ({ai_model})...")
     
@@ -181,7 +218,7 @@ def stage2_identify_speakers(
     with open(output_file, 'w', encoding='utf-8') as f:
         json.dump(mapping_data, f, ensure_ascii=False, indent=2)
     
-    print(f"[Stage 2] ✓ Saved: {output_file}")
+    print(f"[Stage 2] [COMPLETE] Saved: {output_file}")
     print(f"[Stage 2] Speaker mappings:")
     for generic, actual in mappings.items():
         print(f"  {generic} -> {actual}")
@@ -257,13 +294,13 @@ def stage3_apply_speaker_names(
     if "txt" in formats:
         file_path = export_txt(segments_generic, output_dir, base_name)
         written_files.append(file_path)
-        print(f"[Stage 3] ✓ Created: {os.path.basename(file_path)}")
+        print(f"[Stage 3] [CREATED] {os.path.basename(file_path)}")
     
     # Export with AI-identified speaker names
     if "txt" in formats and mappings:
         file_path = export_txt_with_speakers(segments_named, output_dir, base_name)
         written_files.append(file_path)
-        print(f"[Stage 3] ✓ Created: {os.path.basename(file_path)}")
+        print(f"[Stage 3] [CREATED] {os.path.basename(file_path)}")
     
     # Other formats (use named speakers)
     metadata = {
@@ -276,22 +313,22 @@ def stage3_apply_speaker_names(
     if "json" in formats:
         file_path = export_json(segments_named, output_dir, base_name, metadata=metadata)
         written_files.append(file_path)
-        print(f"[Stage 3] ✓ Created: {os.path.basename(file_path)}")
+        print(f"[Stage 3] [CREATED] {os.path.basename(file_path)}")
     
     if "srt" in formats:
         file_path = export_srt(segments_named, output_dir, base_name)
         written_files.append(file_path)
-        print(f"[Stage 3] ✓ Created: {os.path.basename(file_path)}")
+        print(f"[Stage 3] [CREATED] {os.path.basename(file_path)}")
     
     if "docx" in formats:
         try:
             file_path = export_docx(segments_named, output_dir, base_name)
             written_files.append(file_path)
-            print(f"[Stage 3] ✓ Created: {os.path.basename(file_path)}")
+            print(f"[Stage 3] [CREATED] {os.path.basename(file_path)}")
         except Exception as e:
-            print(f"[Stage 3] ⚠ DOCX export skipped: {e}")
+            print(f"[Stage 3] [WARNING] DOCX export skipped: {e}")
     
-    print(f"[Stage 3] ✓ Complete! Created {len(written_files)} files")
+    print(f"[Stage 3] [COMPLETE] Created {len(written_files)} files")
     
     return written_files
 

@@ -155,7 +155,7 @@ def generate_summary_report(metrics: ProcessingMetrics) -> str:
         lines.append(f"  Speakers Identified:")
         if metrics.speaker_mappings:
             for generic, actual in sorted(metrics.speaker_mappings.items()):
-                lines.append(f"    • {generic} -> {actual}")
+                lines.append(f"    - {generic} -> {actual}")
         else:
             lines.append(f"    (No mappings generated)")
         if metrics.speaker_id_request_preview:
@@ -202,7 +202,7 @@ def generate_summary_report(metrics: ProcessingMetrics) -> str:
     lines.append(f"  Directory:      {metrics.output_directory}")
     lines.append(f"  Files Created:")
     for output_file in metrics.output_files:
-        lines.append(f"    • {output_file}")
+        lines.append(f"    - {output_file}")
     lines.append("")
     
     # Warnings/Errors
@@ -212,11 +212,11 @@ def generate_summary_report(metrics: ProcessingMetrics) -> str:
         if metrics.warnings:
             lines.append("  Warnings:")
             for warning in metrics.warnings:
-                lines.append(f"    ⚠ {warning}")
+                lines.append(f"    [WARNING] {warning}")
         if metrics.errors:
             lines.append("  Errors:")
             for error in metrics.errors:
-                lines.append(f"    ✗ {error}")
+                lines.append(f"    [ERROR] {error}")
         lines.append("")
     
     lines.append("=" * 80)

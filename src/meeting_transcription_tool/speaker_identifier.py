@@ -433,15 +433,27 @@ def _build_optimized_prompt(
     Strategy:
     1. If filename provides names/context, use truncated transcript (cost optimization)
     2. If filename doesn't help, use FULL conversation (quality optimization)
+    3. Detect 1-on-1 meetings and enforce strict 2-speaker validation
     """
     
     # Check if filename provides useful context
     filename_has_context = False
+    is_one_on_one = False
+    extracted_names = None
+    
     if filename:
         from .context_extractor import extract_context_from_filename
         context, names = extract_context_from_filename(filename)
         if names or context:
             filename_has_context = True
+        if names:
+            extracted_names = names.split(', ') if isinstance(names, str) else names
+        
+        # Detect 1-on-1 meetings
+        filename_lower = filename.lower()
+        is_one_on_one = any(term in filename_lower for term in ['1on1', '1-on-1', 'one-on-one', '1 on 1'])
+        if context and ('1-on-1' in context.lower() or '1on1' in context.lower()):
+            is_one_on_one = True
     
     # If filename doesn't help, use FULL transcript for maximum quality
     # Otherwise, use intelligent truncation to save tokens
@@ -469,16 +481,22 @@ def _build_optimized_prompt(
         filename_clean = Path(filename).stem
         context_parts.append(f"• FILENAME (IMPORTANT - often contains participant names): {filename_clean}")
     if num_speakers:
-        context_parts.append(f"• Number of speakers: {num_speakers}")
+        context_parts.append(f"• Number of speakers detected: {num_speakers}")
+    if extracted_names:
+        context_parts.append(f"• Names extracted from filename: {', '.join(extracted_names)}")
     if participant_names:
         context_parts.append(f"• Known names: {', '.join(participant_names)}")
     if participant_context:
         context_parts.append(f"• Meeting context: {participant_context}")
+    if is_one_on_one:
+        context_parts.append(f"• ⚠️ CRITICAL: This is a 1-on-1 meeting - there should be EXACTLY 2 speakers")
     
     context_section = "\n".join(context_parts) if context_parts else "• No additional context provided"
     
-    # Optimized prompt with clear structure - emphasize filename usage
+    # Optimized prompt with clear structure - emphasize filename usage and 1-on-1 validation
     filename_instruction = ""
+    one_on_one_warning = ""
+    
     if filename:
         filename_instruction = """
 ⚠️ CRITICAL: The FILENAME above often contains participant names!
@@ -486,6 +504,20 @@ def _build_optimized_prompt(
 - Match these names to speakers in the transcript
 - Filename names should be your PRIMARY source when available
 - Only use generic roles if filename names don't match any speakers
+"""
+    
+    if is_one_on_one:
+        one_on_one_warning = f"""
+🚨 CRITICAL VALIDATION FOR 1-ON-1 MEETING:
+- This is a 1-on-1 meeting - there MUST be EXACTLY 2 speakers
+- If you see more than 2 unique speaker labels, you are likely:
+  a) Mistaking names MENTIONED in conversation as speakers
+  b) Counting background voices or noise as speakers
+  c) Misinterpreting the diarization labels
+- ONLY map the 2 actual speakers who are having the conversation
+- Ignore any names mentioned in the transcript that are NOT actual speakers
+- If filename has names (e.g., "Tim 1 on 1"), those are the 2 speakers - use them
+- Do NOT create mappings for names that are just mentioned in passing
 """
     
     prompt = f"""TASK: Identify each speaker in this transcript by their actual name or role.
@@ -496,26 +528,39 @@ TRANSCRIPT SEGMENTS (chronological with timeline markers):
 CONTEXT:
 {context_section}
 {filename_instruction}
+{one_on_one_warning}
 
 ANALYSIS STRATEGY (in priority order):
 1. **FILENAME FIRST** (if provided):
    - Extract participant names from the filename
    - Match these names to speakers in the transcript
    - Filename is often the most reliable source of names
+   - Example: "Tim 1 on 1 09-29" -> "Tim" is one speaker, find the other
    - Example: "Ian Laiks 1on1" -> look for "Ian" and "Laiks" in transcript
 
-2. Scan transcript for explicit names:
+2. **VALIDATE SPEAKER COUNT** (CRITICAL):
+   - Count the number of UNIQUE speaker labels (SPEAKER_00, SPEAKER_01, etc.)
+   - For 1-on-1 meetings: MUST be exactly 2 speakers
+   - If you see more than 2 labels, you may be:
+     * Counting names MENTIONED in conversation as speakers
+     * Including background voices or noise
+     * Misinterpreting the diarization
+   - ONLY map the actual speakers having the conversation
+   - DO NOT create mappings for names that are just mentioned in passing
+
+3. Scan transcript for explicit names (but validate they are speakers):
    - Self-introductions: "I'm X", "My name is X", "This is X"
    - References: "Thanks X", "Hi X", "X mentioned..."
-   - Email signatures, titles mentioned
+   - BUT: If "X" is mentioned but never speaks, X is NOT a speaker
+   - Only map names of people who actually speak in the transcript
 
-3. Infer from roles/dynamics:
+4. Infer from roles/dynamics:
    - Who asks questions? (Interviewer, Host, Manager)
    - Who answers? (Candidate, Guest, Employee)
    - Who leads? (Chair, Facilitator, Senior)
    - Who reports? (Team member, Junior, Presenter)
 
-4. Use speech patterns and timeline alignment:
+5. Use speech patterns and timeline alignment:
    - Formal vs casual language
    - Technical vs general topics
    - Decision-making authority
@@ -523,17 +568,21 @@ ANALYSIS STRATEGY (in priority order):
    - Track consistent voices using the time ranges provided
    - Reference the uploaded audio (if present) to resolve ambiguity
 
-5. Naming priority:
-   a) Filename names (if match transcript) -> "Ian", "Laiks"
-   b) Actual name if clearly mentioned -> "Sarah"
+6. Naming priority:
+   a) Filename names (if match transcript) -> "Tim", "Ian"
+   b) Actual name if clearly mentioned AND they are a speaker -> "Sarah"
    c) Role if no name but clear -> "Interviewer"
    d) Descriptive role if ambiguous -> "Manager"
 
-REQUIREMENTS:
+CRITICAL VALIDATION RULES:
+✓ For 1-on-1 meetings: EXACTLY 2 speakers - no more, no less
+✓ Only map people who actually SPEAK in the transcript
+✓ Do NOT map names that are just mentioned in conversation
+✓ If filename has 1 name (e.g., "Tim 1 on 1"), Tim is one speaker - find the other
+✓ If filename has 2 names, use both - they are the 2 speakers
 ✓ Be decisive - choose best available label
 ✓ Be consistent - same person = same label
-✓ Be specific - avoid generic labels when possible
-✓ Provide reasoning that cites timeline evidence (e.g., "00:05s reference to 'Ian'")
+✓ Provide reasoning that cites timeline evidence (e.g., "00:05s reference to 'Tim'")
 ✓ Note when audio cues influenced the decision (voice match, tone, etc.)
 
 OUTPUT (JSON):
@@ -541,19 +590,19 @@ OUTPUT (JSON):
   "speaker_mappings": [
     {{
       "generic_label": "SPEAKER_00",
-      "actual_name": "Ian",
+      "actual_name": "Tim",
       "confidence": "high",
-      "reasoning": "Self-introduces as 'Ian' at 00:00:05, leads meeting, asks most questions"
+      "reasoning": "Filename indicates 'Tim 1 on 1', self-introduces as 'Tim' at 00:00:05, leads meeting"
     }},
     {{
       "generic_label": "SPEAKER_01",
-      "actual_name": "Candidate",
+      "actual_name": "Interviewer",
       "confidence": "medium",
-      "reasoning": "Responds to questions, no name mentioned, interview context suggests candidate role"
+      "reasoning": "Responds to Tim's questions, no name mentioned, 1-on-1 context suggests interviewer role"
     }}
   ],
-  "analysis": "1-on-1 interview format. Ian is interviewer (asks questions, controls flow). Other speaker is candidate (answers, discusses experience).",
-  "confidence_notes": "Ian's name explicitly mentioned. Other speaker's name not found in transcript."
+  "analysis": "1-on-1 meeting format. Tim is one participant (name from filename). Other speaker is interviewer (asks questions, guides conversation). Exactly 2 speakers confirmed.",
+  "confidence_notes": "Tim's name from filename matches transcript. Other speaker's name not found, using role-based label. Validated exactly 2 speakers for 1-on-1 meeting."
 }}
 
 Analyze now and provide JSON:"""
@@ -573,9 +622,11 @@ def _build_request_metadata(
     """Create a sanitized preview of the AI request for logging/display."""
 
     def _preview(text: str) -> str:
-        sanitized = " ".join(text.strip().split())
+        # Replace Unicode arrows with ASCII equivalents for Windows compatibility
+        sanitized = text.replace('→', '->').replace('…', '...')
+        sanitized = " ".join(sanitized.strip().split())
         if len(sanitized) > max_preview_chars:
-            return sanitized[:max_preview_chars - 1] + "…"
+            return sanitized[:max_preview_chars - 1] + "..."
         return sanitized
 
     metadata: Dict[str, str] = {
@@ -716,7 +767,7 @@ def format_segments_for_prompt(segments: Iterable[Mapping[str, Any]]) -> str:
         end_ms = _coerce_ms(segment.get("end_ms"))
 
         if start_ms is not None and end_ms is not None:
-            time_range = f"{start_ms/1000:.2f}s → {end_ms/1000:.2f}s"
+            time_range = f"{start_ms/1000:.2f}s -> {end_ms/1000:.2f}s"
         elif start_ms is not None:
             time_range = f"≥ {start_ms/1000:.2f}s"
         else:

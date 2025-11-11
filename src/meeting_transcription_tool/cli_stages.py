@@ -50,11 +50,11 @@ def run_stage1(input_path, output_dir, hf_token, model, api_key, language, tempe
             language=language,
             temperature=temperature,
         )
-        console.print(f"\n[green]✓ Stage 1 Complete![/green]")
+        console.print(f"\n[green][COMPLETE] Stage 1 Complete![/green]")
         console.print(f"[green]Intermediate file:[/green] {output_file}")
         console.print(f"\n[yellow]Next step:[/yellow] Run stage2 with: --input {output_file}")
     except Exception as e:
-        console.print(f"[red]✗ Stage 1 Failed:[/red] {e}")
+        console.print(f"[red][FAILED] Stage 1 Failed:[/red] {e}")
         raise click.ClickException(str(e))
 
 
@@ -76,13 +76,13 @@ def run_stage2(input_path, output_dir, speaker_context, ai_model, api_key):
             ai_model=ai_model,
             api_key=api_key,
         )
-        console.print(f"\n[green]✓ Stage 2 Complete![/green]")
+        console.print(f"\n[green][COMPLETE] Stage 2 Complete![/green]")
         console.print(f"[green]Speaker mappings:[/green] {output_file}")
         console.print(f"\n[yellow]Next step:[/yellow] Run stage3 with:")
         console.print(f"  --transcript {input_path}")
         console.print(f"  --mappings {output_file}")
     except Exception as e:
-        console.print(f"[red]✗ Stage 2 Failed:[/red] {e}")
+        console.print(f"[red][FAILED] Stage 2 Failed:[/red] {e}")
         raise click.ClickException(str(e))
 
 
@@ -102,10 +102,10 @@ def run_stage3(transcript_file, mapping_file, output_dir, formats):
             output_dir=output_dir,
             formats=list(formats),
         )
-        console.print(f"\n[green]✓ Stage 3 Complete![/green]")
+        console.print(f"\n[green][COMPLETE] Stage 3 Complete![/green]")
         console.print(f"[green]Created {len(output_files)} files in:[/green] {output_dir}")
     except Exception as e:
-        console.print(f"[red]✗ Stage 3 Failed:[/red] {e}")
+        console.print(f"[red][FAILED] Stage 3 Failed:[/red] {e}")
         raise click.ClickException(str(e))
 
 
@@ -124,12 +124,12 @@ def list_intermediate(directory):
     if stage1_files:
         console.print("[yellow]Stage 1 Transcripts:[/yellow]")
         for f in stage1_files:
-            console.print(f"  • {f.name}")
+            console.print(f"  - {f.name}")
     
     if stage2_files:
         console.print("\n[yellow]Stage 2 Speaker Mappings:[/yellow]")
         for f in stage2_files:
-            console.print(f"  • {f.name}")
+            console.print(f"  - {f.name}")
     
     if not stage1_files and not stage2_files:
         console.print("[dim]No intermediate files found[/dim]")
