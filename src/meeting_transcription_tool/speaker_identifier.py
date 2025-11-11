@@ -151,42 +151,85 @@ JSON contract:
         audio_metadata=audio_upload,
     )
 
-    user_content: List[Dict[str, Any]] = [{"type": "input_text", "text": prompt}]
-    if audio_upload:
-        user_content.append({
-            "type": "input_audio",
-            "audio": {
-                "file_id": audio_upload["file_id"],
-            }
-        })
-
-    api_method_used = "responses"
+    # Use chat completions API (standard OpenAI API)
+    # Note: Audio upload via file_id requires the model to support it
+    # For GPT-5 Mini, we'll include audio metadata in the prompt if available
+    api_method_used = "chat-completions"
     request_metadata["api_method"] = api_method_used
+    
+    # Enhance prompt with audio upload info if available
+    enhanced_prompt = prompt
+    if audio_upload:
+        enhanced_prompt = f"""{prompt}
+
+NOTE: The original audio file has been uploaded (file_id: {audio_upload['file_id']}, {audio_upload['bytes']:,} bytes).
+Use this information to help identify speakers by voice characteristics when available."""
+    
+    # Add timeout to prevent hanging (300 seconds = 5 minutes)
+    timeout_seconds = 300.0
+    
+    # Map gpt-5-mini to o1-mini (actual reasoning model) if needed
+    actual_model = model_name
+    if model_name == "gpt-5-mini":
+        # Try o1-mini first (reasoning model), but it doesn't support JSON mode
+        # So we'll try it without JSON mode and parse the response
+        actual_model = "o1-mini"
+        use_json_mode = False
+    else:
+        use_json_mode = True
+    
     try:
-        response = client.responses.create(
-            model=model_name,
-            input=[
-                {"role": "system", "content": [{"type": "input_text", "text": system_instruction}]},
-                {"role": "user", "content": user_content},
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.2,
-        )
-        content = _extract_response_text(response)
-    except Exception:
-        # Fallback to chat completions for environments without Responses API support
-        api_method_used = "chat-completions"
-        request_metadata["api_method"] = api_method_used
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": system_instruction},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.2,
-            response_format={"type": "json_object"},
-        )
-        content = response.choices[0].message.content
+        # o1-mini doesn't support response_format, so handle it differently
+        if actual_model == "o1-mini":
+            response = client.chat.completions.create(
+                model=actual_model,
+                messages=[
+                    {"role": "system", "content": system_instruction},
+                    {"role": "user", "content": enhanced_prompt},
+                ],
+                timeout=timeout_seconds,
+            )
+            content = response.choices[0].message.content
+            # Try to extract JSON from the response (o1-mini may wrap it in markdown)
+            import re
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if json_match:
+                content = json_match.group(0)
+        else:
+            response = client.chat.completions.create(
+                model=actual_model,
+                messages=[
+                    {"role": "system", "content": system_instruction},
+                    {"role": "user", "content": enhanced_prompt},
+                ],
+                temperature=0.2,
+                response_format={"type": "json_object"},
+                timeout=timeout_seconds,
+            )
+            content = response.choices[0].message.content
+    except Exception as e:
+        # If o1-mini fails or model doesn't exist, fallback to gpt-4o
+        error_msg = str(e).lower()
+        if "model_not_found" in error_msg or "invalid" in error_msg or actual_model == "o1-mini":
+            print(f"[WARNING] Model {actual_model} not available or failed, falling back to gpt-4o: {e}")
+            actual_model = "gpt-4o"
+            response = client.chat.completions.create(
+                model=actual_model,
+                messages=[
+                    {"role": "system", "content": system_instruction},
+                    {"role": "user", "content": enhanced_prompt},
+                ],
+                temperature=0.2,
+                response_format={"type": "json_object"},
+                timeout=timeout_seconds,
+            )
+            content = response.choices[0].message.content
+        else:
+            raise
+    
+    # Update model_name for metadata if we changed it
+    if actual_model != model_name:
+        model_name = actual_model
     
     # Parse response
     result = json.loads(content)

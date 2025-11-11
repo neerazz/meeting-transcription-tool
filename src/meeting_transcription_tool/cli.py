@@ -34,7 +34,7 @@ load_dotenv()
 console = Console()
 logger = logging.getLogger("meeting_transcription_tool.cli")
 LOG_FORMAT = "%(asctime)s [%(threadName)s] %(levelname)s %(name)s:%(funcName)s - %(message)s"
-LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S.%f"
+LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
 def _get_optimal_parallel_workers() -> int:
