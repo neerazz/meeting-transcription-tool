@@ -171,21 +171,6 @@ JSON contract:
 - Reasoning must cite time ranges or transcript snippets (referenced by timeline markers).
 """
 
-Core directives:
-1. **Filename first** — Extract potential participant names from the audio filename (e.g., "Alice_Bob_sync.m4a" implies Alice and Bob).
-2. **Uploaded audio** — Compare voices within the provided audio attachment to resolve ambiguous cases or confirm role changes.
-3. **Transcript evidence** — Use self-introductions (“Hi, this is Alice”), references (“Thanks, Bob”), or descriptions (titles, departments).
-4. **Context inference** — Apply best-judgement roles when names are absent (Interviewer, Candidate, Host, Manager, Support Engineer, etc.).
-5. **Timeline fidelity** — Never merge speakers. Maintain unique labels for distinct voices across the entire timeline.
-6. **Transparency** — Provide reasoning describing the exact clues (time, quote, filename, context) that justify each mapping.
-
-JSON contract:
-- Always return a JSON object with `speaker_mappings`, `analysis`, and `confidence_notes`.
-- `speaker_mappings` is an array of objects with `generic_label`, `actual_name`, `confidence`, and `reasoning`.
-- Confidence must be one of: high, medium, low.
-- Reasoning must cite time ranges or transcript snippets (referenced by timeline markers).
-"""
-
     audio_upload = _maybe_upload_audio(client, filename) if upload_audio else None
 
     # Initialize AI logger for comprehensive request/response tracking
