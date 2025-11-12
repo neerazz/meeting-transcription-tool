@@ -50,15 +50,38 @@ def extract_context_from_filename(filename: str) -> Tuple[Optional[str], Optiona
             context = description
             break
     
-    # Extract names (capitalize words, excluding common meeting terms and dates)
-    words = re.findall(r'\b[A-Z][a-z]+\b', name)
-    exclude_terms = {'Meeting', 'Call', 'Interview', 'Demo', 'Sync', 'Team', 'Review', 'Daily', 'Sprint'}
-    names = [w for w in words if w not in exclude_terms and not re.match(r'\d', w)]
+    # Extract names - improved pattern matching
+    # Look for capitalized words that are likely names
+    # Pattern: First letter capital, rest lowercase, 2+ characters, not common terms
+    words = re.findall(r'\b[A-Z][a-z]{2,}\b', name)
+    
+    # Extended exclude terms
+    exclude_terms = {
+        'Meeting', 'Call', 'Interview', 'Demo', 'Sync', 'Team', 'Review', 'Daily', 'Sprint',
+        'Performance', 'Quarterly', 'Annual', 'Weekly', 'Monthly', 'Final', 'Proof', 'Audio',
+        'Transcript', 'Recording', 'Session', 'Standup', 'Planning', 'Retro', 'Kickoff',
+        'Townhall', 'Conference', 'Discussion', 'Presentation', 'Workshop', 'Training',
+        'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August',
+        'September', 'October', 'November', 'December', 'Monday', 'Tuesday', 'Wednesday',
+        'Thursday', 'Friday', 'Saturday', 'Sunday', 'Q1', 'Q2', 'Q3', 'Q4', '2024', '2025'
+    }
+    
+    # Also exclude time patterns and common words
+    names = []
+    for w in words:
+        w_lower = w.lower()
+        # Skip if it's an excluded term, a number, or too short
+        if (w not in exclude_terms and 
+            w_lower not in exclude_terms and
+            not re.match(r'^\d', w) and
+            len(w) >= 2 and
+            w_lower not in ['am', 'pm', 'on', 'at', 'the', 'and', 'with', 'for', 'from']):
+            names.append(w)
     
     participant_names = None
     if names:
-        # Limit to first 3 names to avoid noise
-        participant_names = ', '.join(names[:3])
+        # Take first 4 names (in case of multiple participants)
+        participant_names = ', '.join(names[:4])
     
     # Build context description
     if context and participant_names:

@@ -1,0 +1,23 @@
+site_name: Meeting Transcription Tool
+site_description: Documentation for the Meeting Transcription Tool pipeline.
+site_url: https://your-username.github.io/meeting-transcription-tool/
+repo_url: https://github.com/your-username/meeting-transcription-tool
+theme:
+  name: material
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - content.code.copy
+nav:
+  - Overview: index.md
+  - Getting Started: getting-started.md
+  - Pipeline Stages: pipeline.md
+  - Speaker Identification: speaker-identification.md
+  - Contributing: contributing.md
+docs_dir: docs
+markdown_extensions:
+  - admonition
+  - codehilite
+  - footnotes
+  - toc:
+      permalink: true

@@ -222,3 +222,10 @@ data/output/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Sample commands with personal file paths (not for public repo)
+SAMPLE_COMMANDS.md
+
+# AI logs (contains API requests/responses with potentially sensitive data)
+ai_logs/
+*.ai_log

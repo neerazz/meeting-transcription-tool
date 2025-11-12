@@ -23,7 +23,7 @@ from .exporter import export_txt, export_txt_with_speakers, export_json, export_
 from .summary_report import (
     ProcessingMetrics, generate_summary_report, save_summary_report,
     save_batch_summary_report, calculate_whisper_cost, calculate_gpt4o_cost, 
-    calculate_gemini_cost, estimate_tokens
+    calculate_gemini_cost, calculate_gpt5mini_cost, estimate_tokens
 )
 from .context_extractor import extract_full_context, format_context_for_display
 
@@ -34,32 +34,34 @@ load_dotenv()
 console = Console()
 logger = logging.getLogger("meeting_transcription_tool.cli")
 LOG_FORMAT = "%(asctime)s [%(threadName)s] %(levelname)s %(name)s:%(funcName)s - %(message)s"
-LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S.%f"
+LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
 def _get_optimal_parallel_workers() -> int:
 	"""
 	Calculate optimal number of parallel workers based on CPU capacity.
+	Uses ~50% of CPU cores for maximum parallelization without hanging.
 	
 	Returns:
-		Number of workers (CPU count - 1, minimum 1, maximum 8)
+		Number of workers (50% of CPU cores, minimum 1, maximum 16)
 	"""
 	try:
 		cpu_count = multiprocessing.cpu_count()
-		# Use CPU count - 1 to leave one core free for system tasks
-		# Cap at 8 to avoid overwhelming the system with too many threads
-		optimal = max(1, min(cpu_count - 1, 8))
+		# Use 50% of CPU cores, rounded up
+		optimal = max(1, min((cpu_count + 1) // 2, 16))
+		logger.info(f"CPU cores: {cpu_count}, optimal parallel workers: {optimal} (50% utilization)")
 		return optimal
 	except Exception:
-		# Fallback to 3 if CPU count detection fails
-		return 3
+		# Fallback to 2 if CPU count detection fails
+		logger.warning("CPU count detection failed, using 2 workers")
+		return 2
 
 
 def _default_base_name(input_path: str) -> str:
 	name = os.path.basename(input_path)
 	return os.path.splitext(name)[0]
 
-
+ 
 @click.group(help="Meeting Transcription Tool CLI")
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging.")
 @click.option("--quiet", "-q", is_flag=True, help="Suppress all output except for errors.")
@@ -99,7 +101,7 @@ def cli(verbose: bool, quiet: bool) -> None:
 @click.option("--temperature", default=0.0, show_default=True, type=float, help="Sampling temperature for Whisper.")
 @click.option("--identify-speakers/--no-identify-speakers", default=True, help="Use AI to identify speakers by their actual names. Enabled by default.")
 @click.option("--speaker-context", default=None, help="Context about the meeting/participants (e.g., '1-on-1 interview'). If not provided, will extract from filename.")
-@click.option("--ai-model", type=click.Choice(["gpt-4o", "gemini-2.0-flash"]), default="gpt-4o", help="AI model for speaker identification.")
+@click.option("--ai-model", type=click.Choice(["gpt-5-mini", "gpt-4o", "gemini-2.0-flash"]), default="gpt-5-mini", help="AI model for speaker identification.")
 @click.option("--file-filter", default="*.m4a", help="File pattern for batch processing (e.g., '*.m4a', '*.mp3'). Only used when input is a directory.")
 @click.option("--overwrite", is_flag=True, default=True, help="Overwrite existing output files.")
 @click.option("--parallel", "-p", default=None, type=int, help="Number of files to process in parallel for batch mode. Default: Auto-detected based on CPU cores (CPU count - 1)")
@@ -309,7 +311,8 @@ def _process_single_file(
 	metrics.input_file = os.path.basename(input_path)
 	metrics.transcription_model = model
 	metrics.speaker_id_enabled = identify_speakers
-	metrics.speaker_id_model = ai_model if identify_speakers else "N/A"
+	speaker_id_enabled = identify_speakers
+	metrics.speaker_id_model = ai_model if speaker_id_enabled else "N/A"
 	
 	# Get file info
 	try:
@@ -336,148 +339,173 @@ def _process_single_file(
 	console.print(f"[bold]Output:[/bold] {output_dir}")
 	
 	# Extract and display context
-	if not speaker_context and identify_speakers:
+	if not speaker_context and speaker_id_enabled:
 		speaker_context = extract_full_context(input_path)
 		console.print(f"\n{format_context_for_display(input_path)}")
 
-	with Progress(
-		SpinnerColumn(),
-		TextColumn("[progress.description]{task.description}"),
-		TimeElapsedColumn(),
-		transient=True,
-		console=console,
-	) as progress:
-		progress.add_task("Running transcription pipeline...", total=None)
-		try:
+	# Use pipeline_stages module with caching support
+	from .pipeline_stages import (
+		stage1_transcribe_and_diarize,
+		stage2_identify_speakers,
+		stage3_apply_speaker_names,
+		IntermediateTranscript,
+	)
+	from .exporter import TranscriptSegment
+	
+	try:
+		# Stage 1: Transcribe and Diarize (with caching)
+		with Progress(
+			SpinnerColumn(),
+			TextColumn("[progress.description]{task.description}"),
+			TimeElapsedColumn(),
+			transient=True,
+			console=console,
+		) as progress:
+			progress.add_task("Stage 1: Transcribing and diarizing...", total=None)
 			pipeline_start = time.time()
-			whisper_kwargs = {
-				"model": model,
-				"api_key": api_key,
-				"language": language,
-				"temperature": temperature,
-			}
-			# Use thread-safe async execution for parallel processing
-			# Each thread needs its own event loop to avoid conflicts
-			loop = asyncio.new_event_loop()
-			asyncio.set_event_loop(loop)
-			try:
-				result = loop.run_until_complete(run_transcription_pipeline(
-					audio_path=input_path,
-					hf_token=hf_token,
-					**whisper_kwargs
-				))
-			finally:
-				loop.close()
-			pipeline_end = time.time()
 			
-			# Track timing (approximate split)
-			total_pipeline_time = pipeline_end - pipeline_start
-			metrics.diarization_time = total_pipeline_time * 0.6  # ~60% is diarization
-			metrics.transcription_time = total_pipeline_time * 0.4  # ~40% is transcription
-			
-			# Track results
-			metrics.speakers_detected = len(set(seg.speaker for seg in result.segments))
-			metrics.speaker_segments = len(result.segments)
-			metrics.transcript_segments = len(result.segments)
-			metrics.total_words = sum(len(seg.text.split()) for seg in result.segments)
-			
-		except Exception as e:
-			console.print(f"[red]Pipeline failed:[/red] {e}")
-			metrics.errors.append(f"Pipeline failed: {str(e)}")
-			logger.exception("Pipeline failure for %s", input_path)
-			raise click.ClickException(str(e))
-
-	# AI-powered speaker identification (optional)
-	if identify_speakers:
-		console.print(f"\n[bold cyan]Identifying speakers with AI ({ai_model})...[/bold cyan]")
-		try:
-			speaker_id_start = time.time()
-			from .speaker_identifier import identify_speakers, apply_speaker_mappings, format_speaker_summary
-			
-			# Build transcript text for analysis
-			transcript_text = "\n\n".join([
-				f"[{seg.speaker}]\n{seg.text}" for seg in result.segments
-			])
-			
-			# Estimate tokens for cost calculation
-			metrics.speaker_id_tokens_input = estimate_tokens(transcript_text)
-			
-			# Identify speakers - pass filename so AI can extract names from it
-			mappings = identify_speakers(
-				transcript_text=transcript_text,
-				num_speakers=len(set(seg.speaker for seg in result.segments)),
-				participant_names=None,  # Let AI figure out names from context and filename
-				participant_context=speaker_context,
-				filename=input_path,  # Pass filename so AI can extract names from it
+			stage1_file = stage1_transcribe_and_diarize(
+				audio_path=input_path,
+				output_dir=output_dir,
+				hf_token=hf_token,
+				whisper_model=model,
 				api_key=api_key,
-				model=ai_model,
+				language=language,
+				temperature=temperature,
+				use_cache=True,  # Enable caching
 			)
 			
-			speaker_id_end = time.time()
-			metrics.speaker_identification_time = speaker_id_end - speaker_id_start
-			metrics.speaker_id_api_calls = 1
-			
-			# Estimate output tokens (typically smaller than input)
-			metrics.speaker_id_tokens_output = 200  # Typical JSON response size
-			
-			# Apply mappings
-			if mappings:
-				apply_speaker_mappings(result.segments, mappings)
+			pipeline_end = time.time()
+			metrics.diarization_time = (pipeline_end - pipeline_start) * 0.6
+			metrics.transcription_time = (pipeline_end - pipeline_start) * 0.4
+		
+		# Load intermediate transcript for metrics
+		intermediate = IntermediateTranscript.load(stage1_file)
+		transcription_result_segments = [
+			TranscriptSegment(
+				start_ms=seg['start_ms'],
+				end_ms=seg['end_ms'],
+				text=seg['text'],
+				speaker=seg['speaker']
+			)
+			for seg in intermediate.segments
+		]
+		
+		metrics.speakers_detected = intermediate.metadata.get('speakers_detected', 0)
+		metrics.speaker_segments = len(intermediate.segments)
+		metrics.transcript_segments = len(intermediate.segments)
+		metrics.total_words = sum(len(seg['text'].split()) for seg in intermediate.segments)
+		
+		# Stage 2: AI Speaker Identification (with caching)
+		mappings = {}
+		if speaker_id_enabled:
+			console.print(f"\n[bold cyan]Stage 2: Identifying speakers with AI ({ai_model})...[/bold cyan]")
+			try:
+				speaker_id_start = time.time()
+				
+				stage2_file = stage2_identify_speakers(
+					intermediate_file=stage1_file,
+					output_dir=output_dir,
+					speaker_context=speaker_context,
+					ai_model=ai_model,
+					api_key=api_key,
+					use_cache=True,  # Enable caching
+				)
+				
+				# Load mappings
+				with open(stage2_file, 'r', encoding='utf-8') as f:
+					mapping_data = json.load(f)
+				mappings = mapping_data.get('mappings', {})
+				
+				speaker_id_end = time.time()
+				metrics.speaker_identification_time = speaker_id_end - speaker_id_start
+				metrics.speaker_id_api_calls = 1
 				metrics.speaker_mappings = mappings
-				console.print(f"\n[green]{format_speaker_summary(mappings)}[/green]")
-			else:
-				console.print("[yellow]Could not identify speakers, using generic labels[/yellow]")
-				metrics.warnings.append("Speaker identification returned no mappings")
-				logger.warning("Speaker identification returned no mappings for %s", input_path)
-		except Exception as e:
-			console.print(f"[yellow]Speaker identification failed: {e}[/yellow]")
-			console.print("[yellow]Continuing with generic speaker labels[/yellow]")
-			metrics.warnings.append(f"Speaker identification failed: {str(e)}")
-			logger.exception("Speaker identification failed for %s", input_path)
+				
+				# Extract metadata for display
+				if mapping_data.get('ai_request_metadata'):
+					metrics.speaker_id_request_preview = mapping_data['ai_request_metadata'].get("user_prompt_preview", "")
+					console.print("\n[dim]AI speaker-label request metadata:[/dim]")
+					console.print(json.dumps(mapping_data['ai_request_metadata'], indent=2))
+				if mapping_data.get('ai_response_metadata'):
+					console.print("[dim]AI speaker-label response metadata:[/dim]")
+					console.print(json.dumps(mapping_data['ai_response_metadata'], indent=2))
+				if mapping_data.get('ai_audio_file_id'):
+					metrics.speaker_id_audio_file_id = mapping_data['ai_audio_file_id']
+					console.print(f"[dim]AI audio upload:[/dim] file_id={mapping_data['ai_audio_file_id']} "
+					              f"bytes={mapping_data.get('ai_audio_bytes_uploaded', 0):,}")
+				
+				# Estimate tokens (rough calculation)
+				from .speaker_identifier import format_segments_for_prompt
+				transcript_text = format_segments_for_prompt(intermediate.segments)
+				metrics.speaker_id_tokens_input = estimate_tokens(transcript_text)
+				metrics.speaker_id_tokens_output = 200  # Typical JSON response size
+				
+				# Apply mappings to segments
+				from .speaker_identifier import apply_speaker_mappings
+				apply_speaker_mappings(transcription_result_segments, mappings)
+				
+				if mappings:
+					from .speaker_identifier import format_speaker_summary
+					console.print(f"\n[green]{format_speaker_summary(mappings)}[/green]")
+				else:
+					console.print("[yellow]Could not identify speakers, using generic labels[/yellow]")
+					metrics.warnings.append("Speaker identification returned no mappings")
+			except Exception as e:
+				console.print(f"[yellow]Speaker identification failed: {e}[/yellow]")
+				console.print("[yellow]Continuing with generic speaker labels[/yellow]")
+				metrics.warnings.append(f"Speaker identification failed: {str(e)}")
+				logger.exception("Speaker identification failed for %s", input_path)
+		
+		# Stage 3: Export files
+		stage2_file_path = None
+		if speaker_id_enabled and mappings:
+			base_name = _default_base_name(input_path)
+			stage2_file_path = os.path.join(output_dir, f"{base_name}_stage2_speaker_mappings.json")
+			if not os.path.exists(stage2_file_path):
+				stage2_file_path = None
+		
+		written = stage3_apply_speaker_names(
+			intermediate_file=stage1_file,
+			speaker_mapping_file=stage2_file_path,
+			output_dir=output_dir,
+			formats=list(formats),
+		)
+		
+		# Update transcription_result for compatibility with rest of code
+		transcription_result = type('obj', (object,), {
+			'segments': transcription_result_segments,
+			'text': ' '.join(seg.text for seg in transcription_result_segments)
+		})
+		
+	except Exception as e:
+		console.print(f"[red]Pipeline failed:[/red] {e}")
+		metrics.errors.append(f"Pipeline failed: {str(e)}")
+		logger.exception("Pipeline failure for %s", input_path)
+		raise click.ClickException(str(e))
 
+	# Files are already written by stage3, just collect the paths
 	base_name = _default_base_name(input_path)
-	written = []
-	metadata = {
-		"source_file": os.path.abspath(input_path),
-		"model": model,
-		"generated_at": datetime.utcnow().isoformat() + "Z",
-		"speaker_identification": identify_speakers,
-	}
-
-	export_start = time.time()
-	if "txt" in formats:
-		written.append(export_txt(result.segments, output_dir, base_name))
-		# If speaker identification was done, also create _speakers.txt file
-		if identify_speakers and metrics.speaker_mappings:
-			written.append(export_txt_with_speakers(result.segments, output_dir, base_name))
-	if "json" in formats:
-		written.append(export_json(result.segments, output_dir, base_name, metadata=metadata))
-	if "srt" in formats:
-		written.append(export_srt(result.segments, output_dir, base_name))
-	if "docx" in formats:
-		try:
-			written.append(export_docx(result.segments, output_dir, base_name))
-		except Exception as e:
-			console.print(f"[yellow]DOCX export skipped:[/yellow] {e}")
-			metrics.warnings.append(f"DOCX export failed: {str(e)}")
-			logger.warning("DOCX export failed for %s: %s", input_path, e)
-	export_end = time.time()
-	
-	metrics.export_time = export_end - export_start
+	metrics.output_files = [os.path.basename(f) for f in written]
+	metrics.output_directory = output_dir
+	metrics.export_time = 0.1  # Stage 3 handles export, minimal time here
 	logger.info(
 		"Finished exports for %s (written=%s)",
 		input_path,
 		", ".join(os.path.basename(f) for f in written),
 	)
-	metrics.output_files = [os.path.basename(f) for f in written]
-	metrics.output_directory = output_dir
 	
 	# Calculate costs
 	metrics.whisper_audio_minutes = metrics.audio_duration_seconds / 60.0 if metrics.audio_duration_seconds > 0 else 0
 	metrics.whisper_cost_usd = calculate_whisper_cost(metrics.whisper_audio_minutes)
 	
 	if metrics.speaker_id_enabled and metrics.speaker_id_api_calls > 0:
-		if ai_model == "gpt-4o":
+		if ai_model == "gpt-5-mini":
+			metrics.speaker_id_cost_usd = calculate_gpt5mini_cost(
+				metrics.speaker_id_tokens_input,
+				metrics.speaker_id_tokens_output
+			)
+		elif ai_model == "gpt-4o":
 			metrics.speaker_id_cost_usd = calculate_gpt4o_cost(
 				metrics.speaker_id_tokens_input,
 				metrics.speaker_id_tokens_output
@@ -499,18 +527,26 @@ def _process_single_file(
 
 	console.print("[green]Transcription complete![/green]")
 	for path in written:
-		console.print(f"  • {os.path.basename(path)}")
+		console.print(f"  - {os.path.basename(path)}")
 	
 	# Only show detailed summary and save for single file mode (not batch)
 	if not return_metrics:
 		console.print("\n[bold cyan]Summary Report:[/bold cyan]")
 		summary_report = generate_summary_report(metrics)
-		print(summary_report)
+		# Use console.print which handles Unicode better, or encode safely
+		try:
+			console.print(summary_report)
+		except UnicodeEncodeError:
+			# Fallback: print with safe encoding
+			print(summary_report.encode('ascii', 'replace').decode('ascii'))
 		
 		# Save individual summary file only for single file mode
 		summary_file = os.path.join(output_dir, f"{base_name}_SUMMARY.txt")
 		save_summary_report(metrics, summary_file)
-		console.print(f"[green]✓ Summary saved:[/green] {os.path.basename(summary_file)}")
+		try:
+			console.print(f"[green]Summary saved:[/green] {os.path.basename(summary_file)}")
+		except UnicodeEncodeError:
+			print(f"[SUCCESS] Summary saved: {os.path.basename(summary_file)}")
 	
 	# Return metrics for batch processing
 	if return_metrics:

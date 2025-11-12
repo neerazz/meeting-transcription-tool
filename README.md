@@ -1,368 +1,270 @@
 # Meeting Transcription Tool
 
-Professional-grade audio transcription with AI-powered speaker identification, batch processing, and clean output.
+Modern transcription pipeline with diarization, GPT-5 Mini speaker relabeling, comprehensive AI logging, and production-ready exports.
 
-## Features
-
-✅ **Transcription** - OpenAI Whisper API  
-✅ **Speaker Diarization** - pyannote.audio identifies different speakers  
-✅ **AI Speaker Identification** - GPT-4o or Gemini identifies speakers by name (enabled by default)  
-✅ **Clean Text Output** - Filters garbled characters and silence artifacts  
-✅ **Multiple Formats** - TXT, JSON, SRT, DOCX  
-✅ **Batch Processing** - Process multiple files in parallel  
-✅ **Modular Pipeline** - Test stages independently  
-✅ **Smart Context Extraction** - Automatically extracts meeting info from filenames
-
----
+## Highlights
+- **Whisper-based transcription** with accurate diarization
+- **GPT-5 Mini reasoning** for speaker name/role identification (audio upload + timeline aware)
+- **Comprehensive AI logging** - track every request/response with cost analysis
+- **Intelligent prompt optimization** - saves tokens when filename has context, uses full transcript for quality
+- **Parallel processing** - auto-optimized to 50% CPU utilization
+- **Modular CLI stages** for fast iteration and auditing
+- **Rich exports** (TXT, JSON, SRT, DOCX) plus per-run summary reports
+- **Automated documentation** with MkDocs and GitHub Pages
 
 ## Quick Start
 
 ### Installation
-
-```powershell
-# Clone and setup
-git clone <repository>
-cd meeting-transcription-tool
+```bash
 python -m venv .venv
-.\.venv\Scripts\activate
-
-# Install dependencies
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-
-# Install FFmpeg (required for M4A files)
-# See INSTALL_FFMPEG.md for details
-choco install ffmpeg
 ```
 
 ### Setup API Keys
-
-Create `.env` file in project root:
-
+Create `.env` file:
 ```
 OPENAI_API_KEY=your_openai_key_here
 HUGGING_FACE_TOKEN=your_hf_token_here
-GOOGLE_API_KEY=your_google_key_here  # Optional, for Gemini
+GOOGLE_API_KEY=your_google_key_here  # optional, for Gemini
 ```
 
-**Note**: Accept Hugging Face model agreements (see HUGGINGFACE_SETUP.md)
-
----
-
-## Usage
-
-### Single File (default settings)
-
-```powershell
-# Full transcription with AI speaker identification (default)
-python -m src.meeting_transcription_tool.cli transcribe --input "meeting.m4a"
+### Basic Usage
+```bash
+python -m src.meeting_transcription_tool.cli transcribe --input "/path/to/audio.m4a"
 ```
 
-**Output**:
-- `meeting.txt` - Transcript with generic labels (SPEAKER_00, SPEAKER_01)
-- `meeting_speakers.txt` - With AI-identified names (Ian, Candidate)
-- `meeting.json` - JSON format
-- `meeting.srt` - Subtitles
-- `meeting_SUMMARY.txt` - Processing report
+**Outputs:**
+- `audio.txt` - Transcript with diarization labels
+- `audio_speakers.txt` - GPT-5 Mini labelled transcript (names/roles)
+- `audio.json` - Structured transcript with metadata
+- `audio.srt` - Subtitles
+- `audio_SUMMARY.txt` - Processing report with cost breakdown
 
-### Entire Directory (auto parallelism)
+## Usage Examples
 
-```powershell
-# Process every M4A file in a directory
-python -m src.meeting_transcription_tool.cli transcribe `
-    --input "F:\Meetings\" `
-    --file-filter "*.m4a"
-```
-
-> ℹ️ Parallel workers are auto-detected (CPU cores − 1, capped at 8).  
-> The CLI prints the detected value before processing begins.
-
-### Directory With Manual Parallel Override
-
-```powershell
-# Force 6 parallel workers (overrides auto-detected value)
-python -m src.meeting_transcription_tool.cli transcribe `
-    --input "F:\Meetings\" `
-    --parallel 6
-```
-
-**Output**: All files transcribed + **ONE** consolidated summary: `batch_summary_YYYYMMDD_HHMMSS.txt`
-
-### Without AI Speaker Identification
-
-```powershell
-python -m src.meeting_transcription_tool.cli transcribe `
-    --input "meeting.m4a" `
-    --no-identify-speakers
-```
-
----
-
-## Modular Pipeline (For Testing)
-
-Break the pipeline into stages for faster development:
-
-```powershell
-# Stage 1: Transcribe & Diarize (run once, ~8-10 min)
-python -m src.meeting_transcription_tool.cli_stages stage1 `
-    --input "meeting.m4a" `
-    --output-dir "./output"
-
-# Stage 2: AI Speaker ID (test quickly, ~2-5 sec)
-python -m src.meeting_transcription_tool.cli_stages stage2 `
-    --input "./output/meeting_stage1_transcript.json" `
-    --output-dir "./output" `
-    --speaker-context "1-on-1 interview"
-
-# Stage 3: Create Files (instant)
-python -m src.meeting_transcription_tool.cli_stages stage3 `
-    --transcript "./output/meeting_stage1_transcript.json" `
-    --mappings "./output/meeting_stage2_speaker_mappings.json" `
+### 1. Single File Transcription
+```bash
+python -m src.meeting_transcription_tool.cli transcribe \
+    --input "meeting.m4a" \
     --output-dir "./output"
 ```
 
-**See PIPELINE_TESTING.md for detailed guide**
+### 2. Batch Processing (Auto-Parallel)
+```bash
+# Process all M4A files in a directory
+python -m src.meeting_transcription_tool.cli transcribe \
+    --input "/path/to/meetings" \
+    --file-filter "*.m4a" \
+    --output-dir "./output"
 
----
-
-## CLI Options
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--input` `-i` | Audio file or directory | Required |
-| `--output-dir` `-o` | Output directory | Same as input |
-| `--formats` | Output formats (`--formats txt json`) | txt,json,srt |
-| `--language` | Whisper language hint (ISO code) | Auto-detect |
-| `--temperature` | Whisper sampling temperature | 0.0 |
-| `--model` | Whisper model name | whisper-1 |
-| `--api-key` | Override `OPENAI_API_KEY` | `.env` / env var |
-| `--hf-token` | Override `HUGGING_FACE_TOKEN` | `.env` / env var |
-| `--identify-speakers` | AI speaker identification | **Enabled** |
-| `--no-identify-speakers` | Disable AI speaker ID | - |
-| `--speaker-context` | Meeting context | Auto-extract |
-| `--ai-model` | AI model (gpt-4o/gemini-2.0-flash) | gpt-4o |
-| `--file-filter` | Batch file pattern | *.m4a |
-| `--parallel` `-p` | Parallel workers | Auto (CPU cores − 1, max 8) |
-| `--overwrite` | Overwrite existing output files | Enabled |
-
----
-
-## Command Recipes
-
-Use these copy‑paste friendly examples to cover common scenarios:
-
-### 1. Process a Single File With Default Settings
-```powershell
-python -m src.meeting_transcription_tool.cli transcribe --input "C:\Audio\interview.m4a"
+# Auto-detects optimal parallel workers (50% of CPU cores)
 ```
 
-### 2. Process an Entire Directory (auto parallel)
-```powershell
-python -m src.meeting_transcription_tool.cli transcribe --input "F:\Meta\Quarterly Reviews"
+### 3. Custom Parallel Workers
+```bash
+# Override auto-detection
+python -m src.meeting_transcription_tool.cli transcribe \
+    --input "/path/to/meetings" \
+    --parallel 8
 ```
 
-### 3. Restrict to MP3 Files
-```powershell
-python -m src.meeting_transcription_tool.cli transcribe `
-    --input "F:\Meta\Raw Audio" `
-    --file-filter "*.mp3"
-```
+### 4. Different AI Models
+```bash
+# Use GPT-5 Mini (default, reasoning model)
+python -m src.meeting_transcription_tool.cli transcribe \
+    --input "meeting.m4a" \
+    --ai-model gpt-5-mini
 
-### 4. Choose a Custom Output Folder
-```powershell
-python -m src.meeting_transcription_tool.cli transcribe `
-    --input "C:\Audio\demo.m4a" `
-    --output-dir "C:\Transcripts\demo-output"
-```
+# Use GPT-4o
+python -m src.meeting_transcription_tool.cli transcribe \
+    --input "meeting.m4a" \
+    --ai-model gpt-4o
 
-### 5. Export Only TXT + JSON
-```powershell
-python -m src.meeting_transcription_tool.cli transcribe `
-    --input "C:\Audio\standup.m4a" `
-    --formats txt json
-```
-
-### 6. Provide Meeting Context (improves name resolution)
-```powershell
-python -m src.meeting_transcription_tool.cli transcribe `
-    --input "C:\Audio\board-meeting.m4a" `
-    --speaker-context "Quarterly board review with CEO Alice Chen and CFO David Ortiz"
-```
-
-### 7. Force English Transcription & Warmer Temperature
-```powershell
-python -m src.meeting_transcription_tool.cli transcribe `
-    --input "C:\Audio\podcast-episode.mp3" `
-    --language en `
-    --temperature 0.4
-```
-
-### 8. Use Gemini for Speaker Identification
-```powershell
-python -m src.meeting_transcription_tool.cli transcribe `
-    --input "C:\Audio\panel.m4a" `
+# Use Gemini 2.0 Flash
+python -m src.meeting_transcription_tool.cli transcribe \
+    --input "meeting.m4a" \
     --ai-model gemini-2.0-flash
-```
 
-### 9. Disable AI Speaker Identification Entirely
-```powershell
-python -m src.meeting_transcription_tool.cli transcribe `
-    --input "C:\Audio\training-session.m4a" `
+# Disable speaker identification
+python -m src.meeting_transcription_tool.cli transcribe \
+    --input "meeting.m4a" \
     --no-identify-speakers
 ```
 
-### 10. Supply API Credentials Inline (overrides `.env`)
-```powershell
-python -m src.meeting_transcription_tool.cli transcribe `
-    --input "C:\Audio\press-briefing.m4a" `
-    --api-key sk-your-openai-key `
-    --hf-token hf_your_hf_token
+### 5. Provide Meeting Context
+```bash
+# Help AI identify speakers with context
+python -m src.meeting_transcription_tool.cli transcribe \
+    --input "meeting.m4a" \
+    --speaker-context "Quarterly review with CEO Alice Chen and CFO David Ortiz"
 ```
 
-### 11. Manual Parallel Override (power users)
-```powershell
-python -m src.meeting_transcription_tool.cli transcribe `
-    --input "F:\Meta\All Hands\" `
-    --parallel 5
+### 6. Custom Output Formats
+```bash
+# Export only specific formats
+python -m src.meeting_transcription_tool.cli transcribe \
+    --input "meeting.m4a" \
+    --formats txt json srt docx
 ```
 
----
+### 7. Pipeline Stages (For Testing/Iteration)
+
+#### Stage 1: Transcribe & Diarize
+```bash
+python -m src.meeting_transcription_tool.cli_stages stage1 \
+    --input "meeting.m4a" \
+    --output-dir "./output"
+```
+Creates: `meeting_stage1_transcript.json`
+
+#### Stage 2: AI Speaker Identification
+```bash
+python -m src.meeting_transcription_tool.cli_stages stage2 \
+    --input "./output/meeting_stage1_transcript.json" \
+    --output-dir "./output" \
+    --ai-model gpt-5-mini \
+    --speaker-context "1-on-1 interview"
+```
+Creates: `meeting_stage2_speaker_mappings.json` (includes full AI request/response logs)
+
+#### Stage 3: Apply Names & Export
+```bash
+python -m src.meeting_transcription_tool.cli_stages stage3 \
+    --transcript "./output/meeting_stage1_transcript.json" \
+    --mappings "./output/meeting_stage2_speaker_mappings.json" \
+    --output-dir "./output" \
+    --formats txt json srt
+```
+
+### 8. Process Directory from Stage 2
+```bash
+# Process all stage1 files through stage2 in parallel
+python process_stage2_directory.py \
+    -d "/path/to/stage1/files" \
+    -o "/path/to/output" \
+    --ai-model gpt-5-mini \
+    --parallel 8  # Optional: override auto-detection
+```
+
+### 9. View AI Costs
+```bash
+# View comprehensive cost summary
+python view_ai_costs.py
+```
+
+Shows:
+- Total API calls
+- Total cost (USD)
+- Token usage (input/output)
+- Last 24 hours summary
+
+### 10. Check AI Logs
+```bash
+# View all AI request/response logs
+ls -lh ./ai_logs/
+
+# View a specific request
+cat ./ai_logs/ai_request_*.json
+
+# View corresponding response
+cat ./ai_logs/ai_request_*_response.json
+```
+
+## AI Optimization Features
+
+### Intelligent Prompt Optimization
+- **Filename has context**: Uses truncated transcript (8000 chars) → saves tokens
+- **Filename lacks context**: Uses FULL transcript → maximum quality
+- Automatic detection and optimization
+
+### Comprehensive Logging
+- Every AI call logged to `./ai_logs/`
+- Full request/response data
+- Token usage and cost tracking
+- View with `python view_ai_costs.py`
+
+### Parallel Processing
+- Auto-detects CPU cores
+- Uses 50% of CPU (optimal balance)
+- Maximum 16 workers
+- Prevents system overload
+
+### Filename Intelligence
+The system automatically extracts:
+- Participant names (up to 4 names)
+- Meeting types (1-on-1, interview, review, etc.)
+- Dates and times
+- Context descriptions
+
+**Best Practice**: Use descriptive filenames like:
+- `Alice_Bob_1on1_2024-01-15.m4a` ✅
+- `meeting.m4a` ❌
 
 ## Output Files
 
-### With AI Speaker ID (Default)
+### With Speaker Identification (Default)
 - `filename.txt` - Generic labels (SPEAKER_00, SPEAKER_01)
-- `filename_speakers.txt` - AI names (Ian, Candidate)
-- `filename.json`, `filename.srt` - Other formats
-- `filename_SUMMARY.txt` - Individual report
+- `filename_speakers.txt` - AI-identified names (Alice, Bob, Manager)
+- `filename.json` - Structured JSON with metadata
+- `filename.srt` - Subtitles
+- `filename_SUMMARY.txt` - Processing report with costs
 
 ### Batch Mode
 - Individual files for each audio file
-- **ONE** consolidated: `batch_summary_YYYYMMDD_HHMMSS.txt`
+- Consolidated `batch_summary_YYYYMMDD_HHMMSS.txt`
 
----
+## Cost Optimization Tips
 
-## Processing Time & Cost
+1. **Use descriptive filenames** - Include participant names
+2. **Monitor costs** - Run `python view_ai_costs.py` regularly
+3. **Review logs** - Check `./ai_logs/` to see what's being sent
+4. **Choose right model** - GPT-5 Mini (o1-mini) is most cost-effective for reasoning
 
-### Time (30-minute audio)
-- Diarization: ~5-6 minutes
-- Transcription: ~3-4 minutes
-- AI Speaker ID: ~2-5 seconds
-- **Total**: ~8-10 minutes
+## Quality Optimization Tips
 
-### Cost (30-minute audio)
-- Whisper: $0.18
-- Speaker ID (GPT-4o): $0.01-0.02
-- Speaker ID (Gemini): $0.005-0.01
-- **Total**: ~$0.19-0.20
-
----
-
-## Examples
-
-### Interview
-```powershell
-python -m src.meeting_transcription_tool.cli transcribe `
-    --input "Ian 1on1 interview.m4a"
-# Auto-detects: "1-on-1 meeting with Ian"
-# Result: Ian → Ian, other speaker → Candidate
-```
-
-### Team Meeting
-```powershell
-python -m src.meeting_transcription_tool.cli transcribe `
-    --input "team-standup.m4a" `
-    --speaker-context "Weekly standup, Sarah is manager"
-```
-
-### Compare AI Models
-```powershell
-# Test GPT-4o vs Gemini on same file
-python -m src.meeting_transcription_tool.cli_stages stage2 `
-    --input "output/meeting_stage1_transcript.json" `
-    --ai-model gpt-4o
-
-python -m src.meeting_transcription_tool.cli_stages stage2 `
-    --input "output/meeting_stage1_transcript.json" `
-    --ai-model gemini-2.0-flash
-```
-
----
+1. **Provide context** - Use `--speaker-context` if filename doesn't help
+2. **Full transcript mode** - System auto-uses full transcript if filename lacks context
+3. **Review mappings** - Check `_stage2_speaker_mappings.json` for reasoning
+4. **Timeline accuracy** - All timestamps preserved in exports
 
 ## Documentation
 
-- **PIPELINE_TESTING.md** - Modular pipeline guide
-- **SETUP_GUIDE.md** - Detailed setup instructions
-- **HUGGINGFACE_SETUP.md** - HuggingFace model setup
-- **INSTALL_FFMPEG.md** - FFmpeg installation
+The `docs/` directory is the single source of truth.  
+MkDocs (Material theme) builds the GitHub Pages site.
 
----
-
-## Project Structure
-
-```
-src/meeting_transcription_tool/
-├── cli.py                 # Main CLI (full pipeline)
-├── cli_stages.py          # Modular stages CLI
-├── pipeline_stages.py     # Stage functions
-├── audio_processor.py     # Audio validation
-├── transcriber.py         # Whisper transcription
-├── diarization.py         # Speaker diarization
-├── speaker_identifier.py  # AI speaker identification
-├── context_extractor.py   # Smart context from filenames
-├── exporter.py            # Multiple format export
-└── summary_report.py      # Metrics & reporting
-
-tests/
-├── test_*.py              # Unit tests
-└── conftest.py            # Test fixtures
-```
-
----
+- [Overview](docs/index.md)
+- [Getting Started](docs/getting-started.md)
+- [Pipeline Stages](docs/pipeline.md)
+- [Speaker Identification](docs/speaker-identification.md)
+- [Contributing](docs/contributing.md)
+- [AI Optimization Guide](AI_OPTIMIZATION_GUIDE.md)
 
 ## Troubleshooting
 
-### "FFmpeg not found"
-Install FFmpeg (required for M4A):
-```powershell
-choco install ffmpeg
-```
+### High AI Costs
+- Check `./ai_logs/` for large requests
+- Ensure filenames have participant names
+- Review token usage in logs
 
-### "Gated model" error
-Accept Hugging Face agreements:
-1. https://huggingface.co/pyannote/speaker-diarization-3.1
-2. https://huggingface.co/pyannote/segmentation-3.0
+### Poor Speaker Identification
+- Ensure filenames are descriptive
+- Provide `--speaker-context` manually
+- Check if full transcript is being used (see logs)
 
-### Speaker ID not working
-Check `.env` has `OPENAI_API_KEY` set correctly.
+### Processing Hangs
+- Check timeout settings (300s default)
+- Reduce parallel workers if CPU overloaded
+- Check network connectivity
 
----
+## Contributing
 
-## Development
-
-### Run Tests
-```powershell
-pytest
-pytest --cov=src/meeting_transcription_tool
-```
-
-### Test Individual Stages
-See PIPELINE_TESTING.md for modular testing workflow.
-
----
+See the [contributor guide](docs/contributing.md) for:
+- Branching strategy
+- Coding standards
+- Testing requirements
+- Documentation expectations
 
 ## License
 
-[Your License]
-
----
-
-## Version
-
-Current: 1.0.0
-- ✅ Transcription with Whisper
-- ✅ Speaker diarization
-- ✅ AI speaker identification (default)
-- ✅ Clean text filtering
-- ✅ Batch processing with parallel execution
-- ✅ Modular pipeline for testing
-- ✅ Consolidated batch summaries
+MIT License – see [`LICENSE`](LICENSE).
